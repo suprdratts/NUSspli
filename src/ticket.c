@@ -14,7 +14,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -324,8 +324,6 @@ gftEntry:
 
     while(AppRunning(true))
     {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
         if(app == APP_STATE_RETURNING)
             drawTicketFrame(tmd->tid);
 
@@ -352,8 +350,6 @@ gftEntry:
 
             while(AppRunning(true))
             {
-                if(app == APP_STATE_BACKGROUND)
-                    continue;
                 if(app == APP_STATE_RETURNING)
                     drawTicketGenFrame(dir);
 
@@ -475,7 +471,7 @@ void deleteTicket(uint64_t tid)
                             break;
                         if(ptr > fileEnd)
                         {
-                            debugPrintf("Filesize missmatch!");
+                            debugPrintf("Filesize mismatch!");
                             found = false;
                             break;
                         }

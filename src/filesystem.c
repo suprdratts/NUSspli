@@ -13,7 +13,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -34,11 +34,9 @@
 #include <mocha/mocha.h>
 #pragma GCC diagnostic pop
 
-#define SPACEMAP_INVALID 9999
 
 static FSAClientHandle handle;
 static NUSDEV usb = NUSDEV_NONE;
-static int64_t spaceMap[2] = { 0, 0 };
 static OSThread *spaceThread = NULL;
 
 static int spaceThreadMain(int argc, const char **argv)
@@ -131,30 +129,8 @@ NUSDEV getUSB()
     return usb;
 }
 
-static inline uint32_t remapNusdev(NUSDEV dev)
-{
-    if(dev & NUSDEV_USB)
-        return 0;
 
-    if(dev == NUSDEV_MLC)
-        return 1;
 
-    return SPACEMAP_INVALID; // Invalid
-}
-
-void claimSpace(NUSDEV dev, uint64_t size)
-{
-    uint32_t i = remapNusdev(dev);
-    if(i != SPACEMAP_INVALID)
-        spaceMap[i] += size;
-}
-
-void freeSpace(NUSDEV dev, uint64_t size)
-{
-    uint32_t i = remapNusdev(dev);
-    if(i != SPACEMAP_INVALID)
-        spaceMap[i] -= size;
-}
 
 uint64_t getFreeSpace(NUSDEV dev)
 {
@@ -167,13 +143,6 @@ uint64_t getFreeSpace(NUSDEV dev)
     if(FSAGetFreeSpaceSize(getFSAClient(), (char *)nd, (uint64_t *)&freeSpace) != FS_ERROR_OK)
         return 0;
 
-    uint32_t i = remapNusdev(dev);
-    if(i != SPACEMAP_INVALID)
-    {
-        freeSpace -= spaceMap[i];
-        if(freeSpace < 0)
-            freeSpace = 0;
-    }
 
     return (uint64_t)freeSpace;
 }

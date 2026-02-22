@@ -14,7 +14,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -122,6 +122,18 @@ uint32_t homeButtonCallback(void *dummy)
     return 0;
 }
 
+static uint32_t onAcquire(void *dummy)
+{
+    app = APP_STATE_RETURNING;
+    return 0;
+}
+
+static uint32_t onRelease(void *dummy)
+{
+    app = APP_STATE_BACKGROUND;
+    return 0;
+}
+
 void initState()
 {
     ProcUIInit(&OSSavesDone_ReadyToRelease);
@@ -133,6 +145,8 @@ void initState()
     debugPrintf("NUSspli " NUSSPLI_VERSION);
 
     ProcUIRegisterCallback(PROCUI_CALLBACK_HOME_BUTTON_DENIED, &homeButtonCallback, (void *)false, 100);
+    ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, &onAcquire, NULL, 100);
+    ProcUIRegisterCallback(PROCUI_CALLBACK_RELEASE, &onRelease, NULL, 100);
     OSEnableHomeButtonMenu(false);
     ACPInitialize();
 
@@ -172,23 +186,35 @@ bool AppRunning(bool mainthread)
     if(app == APP_STATE_STOPPING || app == APP_STATE_HOME || app == APP_STATE_STOPPED)
         return false;
 
+    if(app == APP_STATE_RETURNING)
+        app = APP_STATE_RUNNING;
+
     if(mainthread)
     {
-        switch(ProcUIProcessMessages(true))
+        ProcUIStatus status;
+        do
         {
-            case PROCUI_STATUS_EXITING:
-                // Real exit request from CafeOS
-                app = APP_STATE_STOPPED;
-                return false;
-            case PROCUI_STATUS_RELEASE_FOREGROUND:
-                // Exit with power button
-                app = APP_STATE_STOPPING;
-                drawByeFrame();
-                return false;
-            default:
-                // Normal loop execution
-                break;
-        }
+            status = ProcUIProcessMessages(true);
+            switch(status)
+            {
+                case PROCUI_STATUS_EXITING:
+                    // Real exit request from CafeOS
+                    app = APP_STATE_STOPPED;
+                    return false;
+                case PROCUI_STATUS_RELEASE_FOREGROUND:
+                    // Exit with power button
+                    app = APP_STATE_STOPPING;
+                    drawByeFrame();
+                    return false;
+                case PROCUI_STATUS_IN_BACKGROUND:
+                    if(app != APP_STATE_BACKGROUND)
+                        onRelease(NULL);
+                    OSSleepTicks(OSMillisecondsToTicks(100));
+                    break;
+                default:
+                    break;
+            }
+        } while(status == PROCUI_STATUS_IN_BACKGROUND);
     }
 
     return true;

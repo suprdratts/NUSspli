@@ -14,7 +14,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -217,9 +217,7 @@ static bool showNetworkError(const char *err)
     bool ret = false;
     while(AppRunning(true))
     {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
-        else if(app == APP_STATE_RETURNING)
+        if(app == APP_STATE_RETURNING)
             drawErrorFrame(toScreen, B_RETURN | Y_RETRY);
 
         if(autoResumeEnabled())
@@ -545,8 +543,8 @@ static void drawStatLine(int line, curl_off_t totalSize, curl_off_t currentSize,
 
 int downloadFile(const char *url, char *file, downloadData *data, FileType type, bool resume, QUEUE_DATA *queueData, RAMBUF *rambuf)
 {
-    // Results: 0 = OK | 1 = Error | 2 = No ticket aviable | 3 = Exit
-    // Types: 0 = .app | 1 = .h3 | 2 = title.tmd | 3 = tilte.tik
+    // Results: 0 = OK | 1 = Error | 2 = No ticket available | 3 = Exit
+    // Types: 0 = .app | 1 = .h3 | 2 = title.tmd | 3 = title.tik
 
     debugPrintf("Download URL: %s", url);
     debugPrintf("Download PATH: %s", rambuf ? "<RAM>" : file);
@@ -673,7 +671,7 @@ int downloadFile(const char *url, char *file, downloadData *data, FileType type,
         return 1;
 
     OSTick ts;
-    OSTick lastTransfair = OSGetTick();
+    OSTick lastTransfer = OSGetTick();
     size_t dltotal; // We use size_t instead of curl_off_t as filesizes are limitted to 4 GB anyway,
     size_t dlnow;
     size_t downloaded = 0;
@@ -706,7 +704,7 @@ int downloadFile(const char *url, char *file, downloadData *data, FileType type,
             {
                 if(dltotal)
                 {
-                    tmp = OSTicksToMilliseconds(ts - lastTransfair); // sample duration in milliseconds
+                    tmp = OSTicksToMilliseconds(ts - lastTransfer); // sample duration in milliseconds
                     if(tmp)
                     {
                         bps *= 1000.0f; // secs to ms.
@@ -725,7 +723,7 @@ int downloadFile(const char *url, char *file, downloadData *data, FileType type,
                     bps = 0.0f;
             }
 
-            lastTransfair = ts;
+            lastTransfer = ts;
             startNewFrame();
 
             if(data != NULL)
@@ -915,8 +913,6 @@ int downloadFile(const char *url, char *file, downloadData *data, FileType type,
 
             while(AppRunning(true))
             {
-                if(app == APP_STATE_BACKGROUND)
-                    continue;
                 if(app == APP_STATE_RETURNING)
                     drawErrorFrame(toScreen, B_RETURN | Y_RETRY);
 
@@ -954,8 +950,6 @@ int downloadFile(const char *url, char *file, downloadData *data, FileType type,
 
             while(AppRunning(true))
             {
-                if(app == APP_STATE_BACKGROUND)
-                    continue;
                 if(app == APP_STATE_RETURNING)
                     drawErrorFrame(toScreen, B_RETURN | Y_RETRY);
 

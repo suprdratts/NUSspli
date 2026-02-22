@@ -13,7 +13,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #pragma once
@@ -39,8 +39,6 @@ extern "C"
     void deinitFS(bool validCfw) __attribute__((__cold__));
     FSAClientHandle getFSAClient() __attribute__((__hot__));
     NUSDEV getUSB();
-    void claimSpace(NUSDEV dev, uint64_t size);
-    void freeSpace(NUSDEV dev, uint64_t size);
     uint64_t getFreeSpace(NUSDEV dev);
     bool checkFreeSpace(NUSDEV dev, uint64_t size);
     uint64_t getSpace(NUSDEV dev);

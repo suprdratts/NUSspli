@@ -13,7 +13,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -334,7 +334,6 @@ bool install(const char *game, bool hasDeps, NUSDEV dev, const char *path, bool 
         return false;
     }
 
-    claimSpace(toUsb ? getUSB() : NUSDEV_MLC, size);
 
     if(keepFiles && noIntro != NULL)
         revertNoIntro(noIntro);

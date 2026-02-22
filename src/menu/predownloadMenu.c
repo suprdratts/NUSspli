@@ -15,7 +15,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -447,8 +447,6 @@ naNedNa:
 
         while(AppRunning(true))
         {
-            if(app == APP_STATE_BACKGROUND)
-                continue;
             if(app == APP_STATE_RETURNING)
                 redraw = true;
 
@@ -556,8 +554,6 @@ naNedNa:
 
             while(AppRunning(true))
             {
-                if(app == APP_STATE_BACKGROUND)
-                    continue;
 
                 showFrame();
 
@@ -588,8 +584,6 @@ naNedNa:
 
                 while(AppRunning(true))
                 {
-                    if(app == APP_STATE_BACKGROUND)
-                        continue;
 
                     showFrame();
 
@@ -625,8 +619,6 @@ naNedNa:
 
                         while(AppRunning(true))
                         {
-                            if(app == APP_STATE_BACKGROUND)
-                                continue;
 
                             showFrame();
 
@@ -659,8 +651,6 @@ naNedNa:
 
                     while(AppRunning(true))
                     {
-                        if(app == APP_STATE_BACKGROUND)
-                            continue;
 
                         showFrame();
 
@@ -713,8 +703,6 @@ naNedNa:
 
                     while(AppRunning(true))
                     {
-                        if(app == APP_STATE_BACKGROUND)
-                            continue;
 
                         showFrame();
 
@@ -783,7 +771,7 @@ naNedNa:
             if(autoStartQueue)
             {
                 disableApd();
-                ret = !proccessQueue();
+                ret = !processQueue();
                 enableApd();
                 if(!ret)
                     showFinishedScreen(entry->name, operation == OPERATION_DOWNLOAD_INSTALL ? FINISHING_OPERATION_INSTALL : FINISHING_OPERATION_DOWNLOAD);

@@ -14,7 +14,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -78,7 +78,7 @@ static inline void removeFQ(TitleData *title)
     }
 }
 
-bool proccessQueue()
+bool processQueue()
 {
     TitleData *title;
     uint64_t sizes[3] = { 0, 0, 0 };

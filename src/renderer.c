@@ -14,7 +14,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -761,21 +761,25 @@ static inline void quitSDL()
         Mix_HaltMusic();
         OSSleepTicks(OSMillisecondsToTicks(20));
         Mix_FreeMusic(backgroundMusic);
-        Mix_CloseAudio();
         backgroundMusic = NULL;
     }
+
+    if(Mix_WasInit(0))
+    {
+        Mix_CloseAudio();
+        Mix_Quit();
+    }
+
     if(bgmBuffer != NULL)
     {
         MEMFreeToDefaultHeap(bgmBuffer);
         bgmBuffer = NULL;
     }
 
-    // TODO:
     if(TTF_WasInit())
         TTF_Quit();
-    SDL_QuitSubSystem(SDL_INIT_AUDIO);
-    //	SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    //	SDL_Quit();
+
+    SDL_Quit();
 }
 
 bool initRenderer()

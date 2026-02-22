@@ -166,8 +166,6 @@ void showErrorFrame(const char *text)
 
     while(AppRunning(true))
     {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
         if(app == APP_STATE_RETURNING)
             drawErrorFrame(text, ANY_RETURN);
 
@@ -218,7 +216,7 @@ bool checkSystemTitle(uint64_t tid, MCPRegion region, bool deinstall)
                 break;
             default:
                 // TODO: MCP_REGION_CHINA, MCP_REGION_KOREA, MCP_REGION_TAIWAN
-                debugPrintf("Unknwon region: %d", settings.game_region);
+                debugPrintf("Unknown region: %d", settings.game_region);
                 return true;
         }
     }
@@ -382,8 +380,6 @@ void showFinishedScreen(const char *titleName, FINISHING_OPERATION op)
 
     while(AppRunning(true))
     {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
         if(app == APP_STATE_RETURNING)
             drawFinishedScreen(titleName, text, op);
 
@@ -421,6 +417,7 @@ void showNoSpaceOverlay(NUSDEV dev)
     {
         while(AppRunning(true))
         {
+
             showFrame();
 
             if(vpad.trigger)
@@ -457,6 +454,7 @@ bool showExitOverlay(bool really)
     {
         while(AppRunning(true))
         {
+
             showFrame();
 
             if(vpad.trigger & VPAD_BUTTON_A)

@@ -14,7 +14,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -242,7 +242,7 @@ size_t getDirsize(const char *path)
 
     size_t ret = 0;
     size_t start = strlen(path);
-    if(start == 0)
+    if(start != 0)
     {
         strcpy(newPath, path);
         if(newPath[start - 1] != '/')
@@ -255,9 +255,9 @@ size_t getDirsize(const char *path)
         FSADirectoryHandle dir;
         FSADirectoryEntry entry;
 
-        if(FSAOpenDir(getFSAClient(), path, &dir) == FS_ERROR_OK)
+        if(FSAOpenDir(getFSAClient(), newPath, &dir) == FS_ERROR_OK)
         {
-            while(ret == FS_ERROR_OK && FSAReadDir(getFSAClient(), dir, &entry) == FS_ERROR_OK)
+            while(FSAReadDir(getFSAClient(), dir, &entry) == FS_ERROR_OK)
             {
                 strcpy(newPath + start, entry.name);
                 ret += entry.info.flags & FS_STAT_DIRECTORY ? getDirsize(newPath) : entry.info.size;
@@ -274,7 +274,7 @@ size_t getDirsize(const char *path)
     return ret;
 }
 
-// This uses informations from https://github.com/Maschell/nuspacker
+// This uses information from https://github.com/Maschell/nuspacker
 TMD_STATE verifyTmd(const TMD *tmd, size_t size)
 {
     if(size >= sizeof(TMD) + (sizeof(TMD_CONTENT) * 9)) // Minimal title.tmd size

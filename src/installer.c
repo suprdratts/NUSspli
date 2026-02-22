@@ -334,7 +334,6 @@ bool install(const char *game, bool hasDeps, NUSDEV dev, const char *path, bool 
         return false;
     }
 
-
     if(keepFiles && noIntro != NULL)
         revertNoIntro(noIntro);
 

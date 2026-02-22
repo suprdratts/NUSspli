@@ -34,7 +34,6 @@
 #include <mocha/mocha.h>
 #pragma GCC diagnostic pop
 
-
 static FSAClientHandle handle;
 static NUSDEV usb = NUSDEV_NONE;
 static OSThread *spaceThread = NULL;
@@ -129,9 +128,6 @@ NUSDEV getUSB()
     return usb;
 }
 
-
-
-
 uint64_t getFreeSpace(NUSDEV dev)
 {
     if(dev == NUSDEV_SD)
@@ -142,7 +138,6 @@ uint64_t getFreeSpace(NUSDEV dev)
 
     if(FSAGetFreeSpaceSize(getFSAClient(), (char *)nd, (uint64_t *)&freeSpace) != FS_ERROR_OK)
         return 0;
-
 
     return (uint64_t)freeSpace;
 }

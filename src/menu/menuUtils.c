@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -33,6 +33,7 @@
 #include <menu/utils.h>
 #include <notifications.h>
 #include <renderer.h>
+#include <screen.h>
 #include <state.h>
 #include <stdio.h>
 #include <titles.h>
@@ -160,25 +161,153 @@ void drawErrorFrame(const char *text, ErrorOptions option)
     drawFrame();
 }
 
+typedef struct
+{
+    char *text;
+    ErrorOptions option;
+} ErrorData;
+
+static void errorUpdate(Screen *self)
+{
+    if(vpad.trigger)
+        screenPop();
+}
+
+static void errorDraw(Screen *self)
+{
+    ErrorData *data = (ErrorData *)self->data;
+    drawErrorFrame(data->text, data->option);
+}
+
+static void errorExit(Screen *self)
+{
+    ErrorData *data = (ErrorData *)self->data;
+    if(data)
+    {
+        if(data->text) MEMFreeToDefaultHeap(data->text);
+        MEMFreeToDefaultHeap(data);
+    }
+    MEMFreeToDefaultHeap(self);
+}
+
 void showErrorFrame(const char *text)
 {
-    drawErrorFrame(text, ANY_RETURN);
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL) return;
 
-    while(AppRunning(true))
+    ErrorData *data = MEMAllocFromDefaultHeap(sizeof(ErrorData));
+    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+
+    data->text = MEMAllocFromDefaultHeap(strlen(text) + 1);
+    if(data->text) strcpy(data->text, text);
+    data->option = ANY_RETURN;
+
+    self->onUpdate = errorUpdate;
+    self->onDraw = errorDraw;
+    self->onExit = errorExit;
+    self->data = data;
+    self->dirty = true;
+
+    screenPush(self);
+}
+
+typedef struct
+{
+    void *ovl;
+    ResultCallback callback;
+    void *userdata;
+} ConfirmationData;
+
+static void confirmationUpdate(Screen *self)
+{
+    ConfirmationData *data = (ConfirmationData *)self->data;
+    if(vpad.trigger & (VPAD_BUTTON_A | VPAD_BUTTON_B))
     {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
-        if(app == APP_STATE_RETURNING)
-            drawErrorFrame(text, ANY_RETURN);
-
-        showFrame();
-
-        if(vpad.trigger)
-            break;
+        bool result = (vpad.trigger & VPAD_BUTTON_A) != 0;
+        ResultCallback cb = data->callback;
+        void *ud = data->userdata;
+        screenPop();
+        if(cb) cb(result, ud);
     }
 }
 
-bool checkSystemTitle(uint64_t tid, MCPRegion region, bool deinstall)
+static void confirmationDraw(Screen *self)
+{
+    (void)self;
+}
+
+static void confirmationExit(Screen *self)
+{
+    ConfirmationData *data = (ConfirmationData *)self->data;
+    if(data)
+    {
+        if(data->ovl) removeErrorOverlay(data->ovl);
+        MEMFreeToDefaultHeap(data);
+    }
+    MEMFreeToDefaultHeap(self);
+}
+
+void showConfirmation(const char *text, ResultCallback callback, void *userdata)
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL) return;
+
+    ConfirmationData *data = MEMAllocFromDefaultHeap(sizeof(ConfirmationData));
+    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+
+    data->callback = callback;
+    data->userdata = userdata;
+    data->ovl = addErrorOverlay(text);
+
+    self->onUpdate = confirmationUpdate;
+    self->onDraw = confirmationDraw;
+    self->onExit = confirmationExit;
+    self->data = data;
+    self->dirty = true;
+
+    screenPush(self);
+}
+
+typedef struct
+{
+    uint64_t tid;
+    MCPRegion region;
+    bool deinstall;
+    ResultCallback callback;
+    void *userdata;
+    int step;
+} CheckSystemData;
+
+static void checkSystemStepCallback(bool result, void *userdata)
+{
+    CheckSystemData *data = (CheckSystemData *)userdata;
+    if(!result)
+    {
+        if(data->callback) data->callback(false, data->userdata);
+        MEMFreeToDefaultHeap(data);
+        return;
+    }
+
+    char toFrame[512];
+    data->step++;
+    if(data->step == 1)
+    {
+        sprintf(toFrame, "%s\n\n" BUTTON_A " %s || " BUTTON_B " %s", localise("Are you really sure you want to brick your Wii U?"), localise("Yes"), localise("No"));
+        showConfirmation(toFrame, checkSystemStepCallback, data);
+    }
+    else if(data->step == 2)
+    {
+        sprintf(toFrame, "%s\n\n" BUTTON_A " %s || " BUTTON_B " %s", localise("You're on your own doing this,\ndo you understand the consequences?"), localise("Yes"), localise("No"));
+        showConfirmation(toFrame, checkSystemStepCallback, data);
+    }
+    else
+    {
+        if(data->callback) data->callback(true, data->userdata);
+        MEMFreeToDefaultHeap(data);
+    }
+}
+
+void checkSystemTitle(uint64_t tid, MCPRegion region, bool deinstall, ResultCallback callback, void *userdata)
 {
     switch(getTidHighFromTid(tid))
     {
@@ -187,140 +316,49 @@ bool checkSystemTitle(uint64_t tid, MCPRegion region, bool deinstall)
         case TID_HIGH_SYSTEM_APPLET:
             break;
         default:
-            return true;
+            if(callback) callback(true, userdata);
+            return;
     }
 
     if(!deinstall)
     {
         MCPSysProdSettings settings __attribute__((__aligned__(0x40)));
         MCPError err = MCP_GetSysProdSettings(mcpHandle, &settings);
-        if(err)
+        if(err == 0)
         {
-            debugPrintf("Error reading settings: %d!", err);
-            settings.game_region = 0;
-        }
-
-        debugPrintf("Console region: 0x%08X", settings.game_region);
-        debugPrintf("Title region: 0x%08X", region);
-        switch(settings.game_region)
-        {
-            case MCP_REGION_EUROPE:
-                if(region & MCP_REGION_EUROPE)
-                    return true;
-                break;
-            case MCP_REGION_USA:
-                if(region & MCP_REGION_USA)
-                    return true;
-                break;
-            case MCP_REGION_JAPAN:
-                if(region & MCP_REGION_JAPAN)
-                    return true;
-                break;
-            default:
-                // TODO: MCP_REGION_CHINA, MCP_REGION_KOREA, MCP_REGION_TAIWAN
-                debugPrintf("Unknwon region: %d", settings.game_region);
-                return true;
-        }
-    }
-
-    char *toFrame = getToFrameBuffer();
-    sprintf(toFrame,
-        "%s\n\n" BUTTON_A " %s || " BUTTON_B " %s",
-        localise("This is a reliable way to brick your console!\nAre you sure you want to do that?"),
-        localise("Yes"),
-        localise("No"));
-
-    void *ovl = addErrorOverlay(toFrame);
-    if(ovl == NULL)
-        return false;
-
-    bool ret = true;
-    while(AppRunning(true))
-    {
-        showFrame();
-
-        if(vpad.trigger & VPAD_BUTTON_A)
-            break;
-        if(vpad.trigger & VPAD_BUTTON_B)
-        {
-            ret = false;
-            break;
-        }
-    }
-
-    removeErrorOverlay(ovl);
-    if(ret)
-    {
-        sprintf(toFrame,
-            "%s\n\n" BUTTON_A " %s || " BUTTON_B " %s",
-            localise("Are you really sure you want to brick your Wii U?"),
-            localise("Yes"),
-            localise("No"));
-
-        ovl = addErrorOverlay(toFrame);
-        if(ovl == NULL)
-            return false;
-
-        while(AppRunning(true))
-        {
-            showFrame();
-
-            if(vpad.trigger & VPAD_BUTTON_A)
-                break;
-            if(vpad.trigger & VPAD_BUTTON_B)
+            switch(settings.game_region)
             {
-                ret = false;
-                break;
+                case MCP_REGION_EUROPE: if(region & MCP_REGION_EUROPE) { if(callback) callback(true, userdata); return; } break;
+                case MCP_REGION_USA: if(region & MCP_REGION_USA) { if(callback) callback(true, userdata); return; } break;
+                case MCP_REGION_JAPAN: if(region & MCP_REGION_JAPAN) { if(callback) callback(true, userdata); return; } break;
             }
         }
-        removeErrorOverlay(ovl);
     }
 
-    if(ret)
-    {
-        sprintf(toFrame,
-            "%s\n\n" BUTTON_A " %s || " BUTTON_B " %s",
-            localise("You're on your own doing this,\ndo you understand the consequences?"),
-            localise("Yes"),
-            localise("No"));
+    CheckSystemData *data = MEMAllocFromDefaultHeap(sizeof(CheckSystemData));
+    if(data == NULL) { if(callback) callback(false, userdata); return; }
+    data->tid = tid; data->region = region; data->deinstall = deinstall; data->callback = callback; data->userdata = userdata; data->step = 0;
 
-        ovl = addErrorOverlay(toFrame);
-        if(ovl == NULL)
-            return false;
-
-        while(AppRunning(true))
-        {
-            showFrame();
-
-            if(vpad.trigger & VPAD_BUTTON_A)
-                break;
-            if(vpad.trigger & VPAD_BUTTON_B)
-            {
-                ret = false;
-                break;
-            }
-        }
-        removeErrorOverlay(ovl);
-    }
-
-    return ret;
+    char toFrame[512];
+    sprintf(toFrame, "%s\n\n" BUTTON_A " %s || " BUTTON_B " %s", localise("This is a reliable way to brick your console!\nAre you sure you want to do that?"), localise("Yes"), localise("No"));
+    showConfirmation(toFrame, checkSystemStepCallback, data);
 }
 
-bool checkSystemTitleFromEntry(const TitleEntry *entry, bool deinstall)
+void checkSystemTitleFromEntry(const TitleEntry *entry, bool deinstall, ResultCallback callback, void *userdata)
 {
-    return checkSystemTitle(entry->tid, entry->region, deinstall);
+    checkSystemTitle(entry->tid, entry->region, deinstall, callback, userdata);
 }
 
-bool checkSystemTitleFromTid(uint64_t tid, bool deinstall)
+void checkSystemTitleFromTid(uint64_t tid, bool deinstall, ResultCallback callback, void *userdata)
 {
     const TitleEntry *entry = getTitleEntryByTid(tid);
-    return entry == NULL ? true : checkSystemTitle(tid, entry->region, deinstall);
+    checkSystemTitle(tid, entry ? entry->region : MCP_REGION_UNKNOWN, deinstall, callback, userdata);
 }
 
-bool checkSystemTitleFromListType(MCPTitleListType *entry, bool deinstall)
+void checkSystemTitleFromListType(MCPTitleListType *entry, bool deinstall, ResultCallback callback, void *userdata)
 {
     const TitleEntry *e = getTitleEntryByTid(entry->titleId);
-    return e == NULL ? true : checkSystemTitle(entry->titleId, e->region, deinstall);
+    checkSystemTitle(entry->titleId, e ? e->region : MCP_REGION_UNKNOWN, deinstall, callback, userdata);
 }
 
 const char *prettyDir(const char *dir)
@@ -349,51 +387,78 @@ const char *prettyDir(const char *dir)
     return ret;
 }
 
-static inline void drawFinishedScreen(const char *titleName, const char *text, FINISHING_OPERATION op)
+typedef struct
 {
+    char *titleName;
+    char *text;
+    FINISHING_OPERATION op;
+} FinishedData;
+
+static void finishedUpdate(Screen *self)
+{
+    if(vpad.trigger)
+        screenPop();
+}
+
+static void finishedDraw(Screen *self)
+{
+    FinishedData *data = (FinishedData *)self->data;
     colorStartNewFrame(SCREEN_COLOR_D_GREEN);
-    int i = op != FINISHING_OPERATION_QUEUE ? textToFrameMultiline(0, ALIGNED_CENTER, titleName, MAX_CHARS) : 0;
-    textToFrame(i++, 0, text);
+    int i = data->op != FINISHING_OPERATION_QUEUE ? textToFrameMultiline(0, ALIGNED_CENTER, data->titleName, MAX_CHARS) : 0;
+    textToFrame(i++, 0, data->text);
     writeScreenLog(i);
     drawFrame();
 }
 
+static void finishedExit(Screen *self)
+{
+    FinishedData *data = (FinishedData *)self->data;
+    if(data)
+    {
+        if(data->titleName) MEMFreeToDefaultHeap(data->titleName);
+        if(data->text) MEMFreeToDefaultHeap(data->text);
+        MEMFreeToDefaultHeap(data);
+    }
+    stopNotification();
+    MEMFreeToDefaultHeap(self);
+}
+
 void showFinishedScreen(const char *titleName, FINISHING_OPERATION op)
 {
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL) return;
+
+    FinishedData *data = MEMAllocFromDefaultHeap(sizeof(FinishedData));
+    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+
+    data->op = op;
+    if(titleName)
+    {
+        data->titleName = MEMAllocFromDefaultHeap(strlen(titleName) + 1);
+        if(data->titleName) strcpy(data->titleName, titleName);
+    }
+    else
+        data->titleName = NULL;
+
     const char *text;
     switch(op)
     {
-        case FINISHING_OPERATION_INSTALL:
-            text = localise("Installed successfully!");
-            break;
-        case FINISHING_OPERATION_DEINSTALL:
-            text = localise("Uninstalled successfully!");
-            break;
-        case FINISHING_OPERATION_DOWNLOAD:
-            text = localise("Downloaded successfully!");
-            break;
-        case FINISHING_OPERATION_QUEUE:
-            text = localise("Queue finished successfully!");
-            break;
+        case FINISHING_OPERATION_INSTALL: text = localise("Installed successfully!"); break;
+        case FINISHING_OPERATION_DEINSTALL: text = localise("Uninstalled successfully!"); break;
+        case FINISHING_OPERATION_DOWNLOAD: text = localise("Downloaded successfully!"); break;
+        case FINISHING_OPERATION_QUEUE: text = localise("Queue finished successfully!"); break;
     }
+    data->text = MEMAllocFromDefaultHeap(strlen(text) + 1);
+    if(data->text) strcpy(data->text, text);
 
-    drawFinishedScreen(titleName, text, op);
+    self->onUpdate = finishedUpdate;
+    self->onDraw = finishedDraw;
+    self->onExit = finishedExit;
+    self->data = data;
+    self->dirty = true;
+
     startNotification();
-
-    while(AppRunning(true))
-    {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
-        if(app == APP_STATE_RETURNING)
-            drawFinishedScreen(titleName, text, op);
-
-        showFrame();
-
-        if(vpad.trigger)
-            break;
-    }
-
-    stopNotification();
+    screenPush(self);
 }
 
 void showNoSpaceOverlay(NUSDEV dev)
@@ -403,103 +468,45 @@ void showNoSpaceOverlay(NUSDEV dev)
     {
         case NUSDEV_USB01:
         case NUSDEV_USB02:
-        case NUSDEV_USB:
-            nd = "USB";
-            break;
-        case NUSDEV_SD:
-            nd = "SD";
-            break;
-        case NUSDEV_MLC:
-            nd = "MLC";
+        case NUSDEV_USB: nd = "USB"; break;
+        case NUSDEV_SD: nd = "SD"; break;
+        case NUSDEV_MLC: nd = "MLC"; break;
+        default: nd = "unknown"; break;
     }
 
-    char *toFrame = getToFrameBuffer();
-    sprintf(toFrame, "%s  %s\n\n%s", localise("Not enough free space on"), nd, localise("Press any key to return")); // nd is initialised!
+    char toFrame[256];
+    sprintf(toFrame, "%s  %s\n\n%s", localise("Not enough free space on"), nd, localise("Press any key to return"));
 
-    void *ovl = addErrorOverlay(toFrame);
-    if(ovl != NULL)
-    {
-        while(AppRunning(true))
-        {
-            showFrame();
-
-            if(vpad.trigger)
-                break;
-        }
-
-        removeErrorOverlay(ovl);
-    }
+    showErrorFrame(toFrame);
 }
 
-bool showExitOverlay(bool really)
+void showExitOverlay(bool really, ResultCallback callback, void *userdata)
 {
     const char *extMsg = localise("Do you really want to exit?");
     const char *yes = localise("Yes");
     const char *no = localise("No");
 
-    size_t extMsgS = strlen(extMsg);
-    size_t yesS = strlen(yes);
-    size_t noS = strlen(no);
+    char ovlMsg[512];
+    sprintf(ovlMsg, "%s\n\n" BUTTON_A " %s || " BUTTON_B " %s", extMsg, yes, no);
 
-    char ovlMsg[extMsgS + 2 /* "\n\n" */ + sizeof(BUTTON_A) /* not -1 cause space after it */ + yesS + 4 /* " || " */ + sizeof(BUTTON_B) + ++noS];
-    OSBlockMove(ovlMsg, extMsg, extMsgS, false);
-    OSBlockMove(ovlMsg + extMsgS, "\n\n" BUTTON_A " ", sizeof("\n\n" BUTTON_A) /* not -1 cause space after it */, false);
-    OSBlockMove(ovlMsg + extMsgS + sizeof("\n\n" BUTTON_A), yes, yesS, false);
-    OSBlockMove(ovlMsg + extMsgS + sizeof("\n\n" BUTTON_A) + yesS, " || " BUTTON_B " ", sizeof(" || " BUTTON_B), false);
-    OSBlockMove(ovlMsg + extMsgS + sizeof("\n\n" BUTTON_A) + yesS + sizeof(" || " BUTTON_B), no, noS, false);
-
-    void *ovl = addErrorOverlay(ovlMsg);
-    if(ovl == NULL)
-        return true;
-
-    bool ret = false;
-    if(really)
+    if(!really)
     {
-        while(AppRunning(true))
-        {
-            showFrame();
-
-            if(vpad.trigger & VPAD_BUTTON_A)
-            {
-                ret = true;
-                break;
-            }
-            if(vpad.trigger & VPAD_BUTTON_B)
-                break;
-        }
+        if(callback) callback(true, userdata);
+        return;
     }
 
-    removeErrorOverlay(ovl);
-    return ret;
+    showConfirmation(ovlMsg, callback, userdata);
 }
 
 void humanize(uint64_t size, char *out)
 {
     const char *m;
     float h = size;
-    if(size >= 1024llu * 1024llu * 1024llu * 1024llu)
-    {
-        h /= 1024.0F * 1024.0F * 1024.0F * 1024.0F;
-        m = "TB";
-    }
-    else if(size >= 1024llu * 1024llu * 1024llu)
-    {
-        h /= 1024.0F * 1024.0F * 1024.0F;
-        m = "GB";
-    }
-    else if(size >= 1024llu * 1024llu)
-    {
-        h /= 1024.0F * 1024.0F;
-        m = "MB";
-    }
-    else if(size >= 1024llu)
-    {
-        h /= 1024.0F;
-        m = "KB";
-    }
-    else
-        m = "B";
-
+    if(size >= 1024llu * 1024llu * 1024llu * 1024llu) { h /= 1024.0F * 1024.0F * 1024.0F * 1024.0F; m = "TB"; }
+    else if(size >= 1024llu * 1024llu * 1024llu) { h /= 1024.0F * 1024.0F * 1024.0F; m = "GB"; }
+    else if(size >= 1024llu * 1024llu) { h /= 1024.0F * 1024.0F; m = "MB"; }
+    else if(size >= 1024llu) { h /= 1024.0F; m = "KB"; }
+    else m = "B";
     sprintf(out, "%.02f %s", h, m);
 }
 

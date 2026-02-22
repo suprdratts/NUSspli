@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -20,6 +20,7 @@
 #include <wut-fixups.h>
 
 #include <stdint.h>
+#include <string.h>
 
 #include <input.h>
 #include <menu/download.h>
@@ -35,18 +36,14 @@
 #include <coreinit/filesystem_fsa.h>
 #pragma GCC diagnostic pop
 
-bool downloadMenu()
+static void downloadKeyboardCallback(bool ok, const char *text, void *userdata)
 {
-    char titleID[17];
-    char titleVer[33];
-    char folderName[FS_MAX_PATH - 11];
-    titleID[0] = titleVer[0] = folderName[0] = '\0';
-
-    if(showKeyboard(KEYBOARD_LAYOUT_TID, KEYBOARD_TYPE_RESTRICTED, titleID, CHECK_HEXADECIMAL, 16, true, "00050000101", NULL))
+    (void)userdata;
+    if(ok && text != NULL)
     {
-        if(!AppRunning(true))
-            return true;
-
+        char titleID[17];
+        strncpy(titleID, text, 16);
+        titleID[16] = '\0';
         toLowercase(titleID);
         uint64_t tid;
         hexToByte(titleID, (uint8_t *)&tid);
@@ -55,9 +52,11 @@ bool downloadMenu()
         if(entry != NULL)
         {
             predownloadMenu(entry);
-            return true;
         }
     }
+}
 
-    return false;
+void downloadMenu()
+{
+    showKeyboard(KEYBOARD_LAYOUT_TID, KEYBOARD_TYPE_RESTRICTED, CHECK_HEXADECIMAL, 16, true, "00050000101", NULL, downloadKeyboardCallback, NULL);
 }

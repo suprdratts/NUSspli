@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2021 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <menu/utils.h>
 #include <titles.h>
 #include <tmd.h>
 
@@ -180,7 +181,7 @@ extern "C"
     WUT_CHECK_SIZE(CETK, sizeof(CA3_PPKI_CERT) + (sizeof(OTHER_PPKI_CERT) * 2));
 
     bool generateTik(const char *path, const TMD *tmd);
-    bool generateCert(const TMD *tmd, const TICKET *ticket, size_t ticketSize, const char *path);
+    void generateCert(const TMD *tmd, const TICKET *ticket, size_t ticketSize, const char *path, ResultCallback callback, void *userdata);
     void generateFakeTicket();
     void deleteTicket(uint64_t tid);
     bool hasMagicHeader(const TICKET *ticket);

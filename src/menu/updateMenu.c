@@ -1,6 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
- * Copyright (c) 2020-2022 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2019-2020 Pokes303                                        *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -18,66 +19,88 @@
 
 #include <wut-fixups.h>
 
+#include <stdio.h>
 #include <string.h>
 
 #include <input.h>
-#include <localisation.h>
+#include <menu/update.h>
 #include <menu/utils.h>
 #include <renderer.h>
+#include <screen.h>
 #include <state.h>
-#include <staticMem.h>
 #include <updater.h>
 #include <utils.h>
 
-static void drawUpdateMenuFrame(const char *newVersion)
+#pragma GCC diagnostic ignored "-Wundef"
+#include <coreinit/memdefaultheap.h>
+#pragma GCC diagnostic pop
+
+typedef struct
 {
+    char newVersion[32];
+    NUSSPLI_TYPE type;
+} UpdateMenuData;
+
+static void updateMenuUpdate(Screen *self)
+{
+    UpdateMenuData *data = (UpdateMenuData *)self->data;
+
+    if(vpad.trigger & VPAD_BUTTON_A)
+    {
+        update(data->newVersion, data->type, NULL, NULL);
+        screenPop();
+    }
+    else if(vpad.trigger & VPAD_BUTTON_B)
+    {
+        screenPop();
+    }
+}
+
+static void updateMenuDraw(Screen *self)
+{
+    UpdateMenuData *data = (UpdateMenuData *)self->data;
     startNewFrame();
-    boxToFrame(0, 5);
-    textToFrame(1, ALIGNED_CENTER, "NUSspli");
-    char *toScreen = getToFrameBuffer();
-    strcpy(toScreen, "NUS simple packet loader/installer [");
-    strcat(toScreen, NUSSPLI_VERSION);
-    strcat(toScreen, "]");
-    textToFrame(3, ALIGNED_CENTER, toScreen);
 
-    textToFrame(4, ALIGNED_CENTER, NUSSPLI_COPYRIGHT);
+    char *toFrame = getToFrameBuffer();
+    sprintf(toFrame, "%s: v%s", localise("New version available"), data->newVersion);
+    textToFrame(0, ALIGNED_CENTER, toFrame);
 
-    textToFrame(7, 0, localise("Update available!"));
-    lineToFrame(MAX_LINES - 3, SCREEN_COLOR_WHITE);
-    strcpy(toScreen, localise("Press " BUTTON_A " to update to"));
-    strcat(toScreen, " ");
-    strcat(toScreen, newVersion);
-    textToFrame(MAX_LINES - 2, 0, toScreen);
-    textToFrame(MAX_LINES - 1, 0, localise("Press " BUTTON_B " to cancel"));
+    textToFrame(2, ALIGNED_CENTER, localise("Do you want to update now?"));
+
+    textToFrame(MAX_LINES - 2, ALIGNED_CENTER, localise(BUTTON_A " to update now"));
+    textToFrame(MAX_LINES - 1, ALIGNED_CENTER, localise(BUTTON_B " to return to the menu"));
+
     drawFrame();
 }
 
-bool updateMenu(const char *newVersion, NUSSPLI_TYPE type)
+static void updateMenuExit(Screen *self)
 {
-    drawUpdateMenuFrame(newVersion);
+    if(self->data)
+        MEMFreeToDefaultHeap(self->data);
+    MEMFreeToDefaultHeap(self);
+}
 
-    while(AppRunning(true))
+void updateMenu(const char *newVersion, NUSSPLI_TYPE type)
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL)
+        return;
+
+    UpdateMenuData *data = MEMAllocFromDefaultHeap(sizeof(UpdateMenuData));
+    if(data == NULL)
     {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
-        if(app == APP_STATE_RETURNING)
-            drawUpdateMenuFrame(newVersion);
-
-        showFrame();
-
-        if(vpad.trigger & VPAD_BUTTON_A)
-        {
-            if(update(newVersion, type))
-            {
-                relaunch();
-                return true;
-            }
-            else
-                break;
-        }
-        if(vpad.trigger & VPAD_BUTTON_B)
-            break;
+        MEMFreeToDefaultHeap(self);
+        return;
     }
 
-    return false;
+    strncpy(data->newVersion, newVersion, 31);
+    data->type = type;
+
+    self->onUpdate = updateMenuUpdate;
+    self->onDraw = updateMenuDraw;
+    self->onExit = updateMenuExit;
+    self->data = data;
+    self->dirty = true;
+
+    screenPush(self);
 }

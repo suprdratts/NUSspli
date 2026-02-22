@@ -1,6 +1,6 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
- * Copyright (c) 2021 V10lator <v10lator@myway.de>                         *
+ * Copyright (c) 2021-2022 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -24,6 +24,7 @@
 
 #pragma GCC diagnostic ignored "-Wundef"
 #include <coreinit/mcp.h>
+#include <menu/utils.h>
 #pragma GCC diagnostic pop
 
 #ifdef __cplusplus
@@ -31,7 +32,7 @@ extern "C"
 {
 #endif
 
-    bool deinstall(MCPTitleListType *title, const char *name, bool channelHaxx, bool skipEnd);
+    void deinstall(MCPTitleListType *title, const char *name, bool channelHaxx, bool skipEnd, ResultCallback callback, void *userdata);
 
 #ifdef __cplusplus
 }

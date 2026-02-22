@@ -19,9 +19,15 @@
 #include <wut-fixups.h>
 
 #include <input.h>
+#include <menu/logs.h>
 #include <menu/utils.h>
 #include <renderer.h>
+#include <screen.h>
 #include <state.h>
+
+#pragma GCC diagnostic ignored "-Wundef"
+#include <coreinit/memdefaultheap.h>
+#pragma GCC diagnostic pop
 
 static void drawLogsFrame()
 {
@@ -30,20 +36,44 @@ static void drawLogsFrame()
     drawFrame();
 }
 
+static void logsMenuUpdate(Screen *self)
+{
+    if(vpad.trigger)
+    {
+        screenPop();
+        return;
+    }
+}
+
+static void logsMenuDraw(Screen *self)
+{
+    (void)self;
+    drawLogsFrame();
+}
+
+static void logsMenuExit(Screen *self)
+{
+    MEMFreeToDefaultHeap(self);
+}
+
+Screen *logsMenuScreenGet()
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL)
+        return NULL;
+
+    self->onUpdate = logsMenuUpdate;
+    self->onDraw = logsMenuDraw;
+    self->onExit = logsMenuExit;
+    self->data = NULL;
+    self->dirty = true;
+
+    return self;
+}
+
 void logsMenu()
 {
-    drawLogsFrame();
-
-    while(AppRunning(true))
-    {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
-        if(app == APP_STATE_RETURNING)
-            drawLogsFrame();
-
-        showFrame();
-
-        if(vpad.trigger)
-            break;
-    }
+    Screen *s = logsMenuScreenGet();
+    if(s)
+        screenPush(s);
 }

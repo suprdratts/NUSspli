@@ -1,6 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
- * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2019-2020 Pokes303                                        *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -19,7 +20,7 @@
 #pragma once
 
 #include <wut-fixups.h>
-
+#include <screen.h>
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -27,7 +28,10 @@ extern "C"
 {
 #endif
 
-    char *fileBrowserMenu(bool installMenu, bool allowNoIntro);
+    typedef void (*FileBrowserCallback)(const char *path, void *userdata);
+
+    void fileBrowserMenu(bool installMenu, bool allowNoIntro, FileBrowserCallback callback, void *userdata);
+    Screen *fileBrowserScreenGet(bool installMenu, bool allowNoIntro, FileBrowserCallback callback, void *userdata);
 
 #ifdef __cplusplus
 }

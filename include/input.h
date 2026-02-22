@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2021 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -84,11 +84,13 @@ extern "C"
         CT_VPAD_0 = 4 + VPAD_CHAN_0,
     } ControllerType;
 
+    typedef void (*KeyboardCallback)(bool ok, const char *text, void *userdata);
+
     bool SWKBD_Init() __attribute__((__cold__));
     void SWKBD_Shutdown() __attribute__((__cold__));
 
     void readInput() __attribute__((__hot__));
-    bool showKeyboard(KeyboardLayout layout, KeyboardType type, char *output, KeyboardChecks check, int maxlength, bool limit, const char *input, const char *okStr);
+    void showKeyboard(KeyboardLayout layout, KeyboardType type, KeyboardChecks check, int maxlength, bool limit, const char *input, const char *okStr, KeyboardCallback callback, void *userdata);
 
 #ifdef __cplusplus
 }

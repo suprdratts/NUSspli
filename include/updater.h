@@ -1,6 +1,6 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
- * Copyright (c) 2020-2021 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -21,6 +21,7 @@
 #include <wut-fixups.h>
 
 #include <stdbool.h>
+#include <menu/utils.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -33,8 +34,7 @@ extern "C"
         NUSSPLI_TYPE_CHANNEL = 1
     } NUSSPLI_TYPE;
 
-    bool updateCheck();
-    bool update(const char *newVersion, NUSSPLI_TYPE type) __attribute__((__cold__));
+    void update(const char *newVersion, NUSSPLI_TYPE type, ResultCallback callback, void *userdata);
 
 #ifdef __cplusplus
 }

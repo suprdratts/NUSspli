@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <menu/utils.h>
 
 #pragma GCC diagnostic ignored "-Wundef"
 #include <coreinit/mcp.h>
@@ -82,7 +83,7 @@ extern "C"
     void getSpeedString(float bytePerSecond, char *out);
     void hexToByte(const char *hex, uint8_t *out);
     void glueMcpData(MCPInstallTitleInfo *info, McpData *data);
-    void showMcpProgress(McpData *data, const char *game, bool inst);
+    void showMcpProgress(McpData *data, const char *game, bool inst, ResultCallback callback, void *userdata);
 #ifdef NUSSPLI_DEBUG
     void debugInit();
     void shutdownDebug();

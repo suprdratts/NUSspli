@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2022 Xpl0itU <DaThinkingChair@protonmail.com>             *
- * Copyright (c) 2022 V10lator <v10lator@myway.de>                         *
+ * Copyright (c) 2022-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -27,6 +27,7 @@
 #include <file.h>
 #include <filesystem.h>
 #include <list.h>
+#include <menu/utils.h>
 #include <titles.h>
 #include <tmd.h>
 
@@ -72,7 +73,7 @@ extern "C"
     int addToQueue(TitleData *data);
     bool removeFromQueue(uint32_t index);
     void clearQueue();
-    bool proccessQueue();
+    void processQueue(ResultCallback callback, void *userdata);
     LIST *getTitleQueue();
 
 #ifdef __cplusplus

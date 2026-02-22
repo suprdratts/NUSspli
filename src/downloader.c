@@ -35,6 +35,7 @@
 #include <queue.h>
 #include <renderer.h>
 #include <romfs.h>
+#include <screen.h>
 #include <state.h>
 #include <staticMem.h>
 #include <thread.h>
@@ -67,8 +68,6 @@ static CURL *curl;
 static char curlError[CURL_ERROR_SIZE];
 static bool curlReuseConnection = true;
 
-static void *cancelOverlay = NULL;
-
 typedef struct
 {
     bool running;
@@ -78,12 +77,6 @@ typedef struct
     curl_off_t dltotal;
     curl_off_t dlnow;
 } curlProgressData;
-
-#define closeCancelOverlay()               \
-    {                                      \
-        removeErrorOverlay(cancelOverlay); \
-        cancelOverlay = NULL;              \
-    }
 
 static int progressCallback(void *rawData, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow)
 {
@@ -189,130 +182,6 @@ static CURLcode ssl_ctx_init(CURL *cu, void *sslctx, void *parm)
 }
 
 #define initNetwork() (curlReuseConnection = false)
-
-static bool showNetworkError(const char *err)
-{
-    char *toScreen = getToFrameBuffer();
-    if(toScreen != err)
-        strcpy(toScreen, err);
-
-    int os = 0;
-    int frames = 0;
-    char *p = NULL;
-    if(autoResumeEnabled())
-    {
-        os = 9 * 60; // 9 seconds with 60 FPS
-        frames = os;
-        strcat(toScreen, "\n\n");
-        p = toScreen + strlen(toScreen);
-        const char *pt = localise("Next try in _ seconds.");
-        strcpy(p, pt);
-        const char *n = strchr(pt, '_');
-        p += n - pt;
-    }
-    else
-        drawErrorFrame(toScreen, B_RETURN | Y_RETRY);
-
-    int s;
-    bool ret = false;
-    while(AppRunning(true))
-    {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
-        else if(app == APP_STATE_RETURNING)
-            drawErrorFrame(toScreen, B_RETURN | Y_RETRY);
-
-        if(autoResumeEnabled())
-        {
-            s = frames / 60;
-            if(s != os)
-            {
-                *p = '1' + s;
-                os = s;
-                drawErrorFrame(toScreen, B_RETURN | Y_RETRY);
-            }
-        }
-
-        showFrame();
-
-        if(vpad.trigger & VPAD_BUTTON_B)
-            break;
-        if(vpad.trigger & VPAD_BUTTON_Y || (autoResumeEnabled() && --frames == 0))
-        {
-            ret = true;
-            break;
-        }
-    }
-
-    return ret;
-}
-
-// We're not using WUTs NNResult_IsSuccess() / NNResult_IsFailure() here as it's wrong
-static void resetNetwork()
-{
-    BOOL con;
-    NNResult nnres = ACIsApplicationConnected(&con);
-    if(nnres.value != 0 || con)
-        return;
-
-    void *ovl = addErrorOverlay(localise("Preparing. This might take some time. Please be patient."));
-
-    // Disconnect from network
-    deinitDownloader();
-    restartUdpLog1();
-    socket_lib_finish();
-    NNResult cr;
-
-closeAgain:
-    nnres = ACClose();
-    do
-    {
-        cr = ACGetCloseStatus(nnres);
-        if(cr.value == -1) // FAILED
-        {
-            if(ovl)
-                removeErrorOverlay(ovl);
-
-            if(showNetworkError(localise("Error closing network!")))
-            {
-                ovl = addErrorOverlay(localise("Preparing. This might take some time. Please be patient."));
-                goto closeAgain;
-            }
-
-            goto exitApp;
-        }
-    } while(cr.value != 0); // SUCCESS. A value of 1 means processing, so we're not handling it.
-
-    // Connect to network
-reconnect:
-    nnres = ACConnect();
-    if(nnres.value == 0)
-    {
-        socket_lib_init();
-        set_multicast_state(true);
-
-        restartUdpLog2();
-        initDownloader();
-
-        if(ovl)
-            removeErrorOverlay(ovl);
-
-        return;
-    }
-
-    if(ovl)
-        removeErrorOverlay(ovl);
-
-    if(showNetworkError(localise("Error connecting to network!")))
-    {
-        ovl = addErrorOverlay(localise("Preparing. This might take some time. Please be patient."));
-        goto reconnect;
-    }
-
-exitApp:
-    if(AppRunning(true))
-        homeButtonCallback((void *)true);
-}
 
 bool initDownloader()
 {
@@ -543,719 +412,627 @@ static void drawStatLine(int line, curl_off_t totalSize, curl_off_t currentSize,
     textToFrame(line, ALIGNED_RIGHT, toScreen);
 }
 
-int downloadFile(const char *url, char *file, downloadData *data, FileType type, bool resume, QUEUE_DATA *queueData, RAMBUF *rambuf)
+typedef struct
 {
-    // Results: 0 = OK | 1 = Error | 2 = No ticket aviable | 3 = Exit
-    // Types: 0 = .app | 1 = .h3 | 2 = title.tmd | 3 = tilte.tik
+    char url[256];
+    char file[FS_MAX_PATH];
+    downloadData *data;
+    FileType type;
+    bool resume;
+    QUEUE_DATA *queueData;
+    RAMBUF *rambuf;
+    ResultCallback callback;
+    void *userdata;
 
-    debugPrintf("Download URL: %s", url);
-    debugPrintf("Download PATH: %s", rambuf ? "<RAM>" : file);
-
-    char *name;
-    if(rambuf)
-        name = file;
-    else
-    {
-        size_t haystack;
-        for(haystack = strlen(file); file[haystack] != '/'; haystack--)
-            ;
-        name = file + haystack + 1;
-    }
-
-    char *toScreen = getToFrameBuffer();
-    void *fp;
+    // State
+    int state;
+    FILE *fp;
     size_t fileSize;
-    if(rambuf)
+    volatile curlProgressData cdata;
+    OSThread *dlThread;
+    OSTime t;
+    OSTick lastTransfair;
+    size_t downloaded;
+    float oldBps;
+    int frames;
+    int result;
+    int networkErrorFrames;
+    char networkErrorMsg[1024];
+} DownloadFileData;
+
+static void downloadFileDraw(Screen *self)
+{
+    DownloadFileData *data = (DownloadFileData *)self->data;
+    char *toScreen = getToFrameBuffer();
+    int line;
+
+    startNewFrame();
+
+    if(data->state == 3) // Network error display
     {
-        fp = (void *)open_memstream(&rambuf->buf, &rambuf->size);
-        fileSize = 0;
+        drawErrorFrame(data->networkErrorMsg, B_RETURN | Y_RETRY);
+        if(autoResumeEnabled())
+        {
+            int s = data->networkErrorFrames / 60;
+            char *p = strchr(data->networkErrorMsg, '_'); // Hacky
+            if(p) *p = '0' + s;
+        }
     }
     else
     {
-        if(resume && fileExists(file))
+        OSTick ts = data->cdata.ts;
+        curl_off_t dltotal = data->cdata.dltotal;
+        curl_off_t dlnow = data->cdata.dlnow;
+
+        float bps = (float)(dlnow - data->downloaded);
+        data->downloaded = dlnow;
+        dlnow += data->fileSize;
+
+        if(bps != 0.0f)
         {
-            fileSize = getFilesize(file);
-            if(fileSize != 0)
-            {
-                if(data != NULL && data->cs)
-                {
-                    if(fileSize == data->cs)
-                    {
-                        sprintf(toScreen, "Download %s skipped!", name);
-                        addToScreenLog(toScreen);
-                        data->dlnow += fileSize;
-                        if(queueData != NULL)
-                            queueData->downloaded += fileSize;
-
-                        return 0;
-                    }
-                    if(fileSize > data->cs)
-                        return downloadFile(url, file, data, type, false, queueData, rambuf);
-                }
-
-                fp = (void *)openFile(file, "a", 0);
-            }
-            else
-                fp = (void *)openFile(file, "w", data == NULL ? 0 : data->cs);
-        }
-        else
-        {
-            fp = (void *)openFile(file, "w", data == NULL ? 0 : data->cs);
-            fileSize = 0;
-        }
-    }
-
-    if(fp == NULL)
-        return 1;
-
-    curlError[0] = '\0';
-    volatile curlProgressData cdata = {
-        .running = true,
-        .error = CURLE_OK,
-        .dlnow = 0.0D,
-        .dltotal = 0.0D,
-    };
-    spinCreateLock((cdata.lock), SPINLOCK_FREE);
-
-    CURLoption opt = CURLOPT_URL;
-    CURLcode ret = curl_easy_setopt(curl, opt, url);
-    if(ret == CURLE_OK)
-    {
-        opt = CURLOPT_FRESH_CONNECT;
-        if(curlReuseConnection)
-            ret = curl_easy_setopt(curl, opt, 0L);
-        else
-        {
-            ret = curl_easy_setopt(curl, opt, 1L);
-            curlReuseConnection = true;
-        }
-        if(ret == CURLE_OK)
-        {
-            opt = CURLOPT_RESUME_FROM_LARGE;
-            ret = curl_easy_setopt(curl, opt, (curl_off_t)fileSize);
-            if(ret == CURLE_OK)
-            {
-                opt = CURLOPT_WRITEFUNCTION;
-#pragma GCC diagnostic ignored "-Wcast-function-type"
-                ret = curl_easy_setopt(curl, opt, rambuf ? fwrite : (size_t(*)(const void *, size_t, size_t, FILE *))addToIOQueue);
-#pragma GCC diagnostic pop
-                if(ret == CURLE_OK)
-                {
-                    opt = CURLOPT_WRITEDATA;
-                    ret = curl_easy_setopt(curl, opt, (FILE *)fp);
-                    if(ret == CURLE_OK)
-                    {
-                        opt = CURLOPT_XFERINFODATA;
-                        ret = curl_easy_setopt(curl, opt, &cdata);
-                    }
-                }
-            }
-        }
-    }
-
-    if(ret != CURLE_OK)
-    {
-        if(rambuf)
-            fclose((FILE *)fp);
-        else
-            addToIOQueue(NULL, 0, 0, (FSAFileHandle)fp);
-
-        debugPrintf("curl_easy_setopt error: %s (%d / %u / %ud)", curlError, ret, opt, fileSize);
-        return 1;
-    }
-
-    debugPrintf("Calling curl_easy_perform()");
-    OSTime t = OSGetSystemTime();
-
-    char *argv[1] = { (char *)&cdata };
-    OSThread *dlThread = startThread("NUSspli downloader", THREAD_PRIORITY_HIGH, STACKSIZE_BIG, dlThreadMain, 1, (char *)argv, OS_THREAD_ATTRIB_AFFINITY_CPU0);
-    if(dlThread == NULL)
-        return 1;
-
-    OSTick ts;
-    OSTick lastTransfair = OSGetTick();
-    size_t dltotal; // We use size_t instead of curl_off_t as filesizes are limitted to 4 GB anyway,
-    size_t dlnow;
-    size_t downloaded = 0;
-    size_t tmp;
-    float bps;
-    float oldBps = 0.0D;
-    int frames = 1;
-    int line;
-    while(cdata.running && AppRunning(true))
-    {
-        if(--frames == 0)
-        {
-            if(!spinTryLock(cdata.lock))
-            {
-                frames = 2;
-                continue;
-            }
-
-            ts = cdata.ts;
-            dltotal = cdata.dltotal;
-            dlnow = cdata.dlnow;
-            spinReleaseLock(cdata.lock);
-
-            bps = dlnow - downloaded;
-            downloaded = dlnow;
-            dlnow += fileSize;
-
-            // Calculate download speed
-            if(bps != 0.0f)
-            {
-                if(dltotal)
-                {
-                    tmp = OSTicksToMilliseconds(ts - lastTransfair); // sample duration in milliseconds
-                    if(tmp)
-                    {
-                        bps *= 1000.0f; // secs to ms.
-                        bps /= tmp; // byte/s
-
-                        // Smoothing
-                        bps *= 1.0f - SMOOTHING_FACTOR;
-                        oldBps *= SMOOTHING_FACTOR;
-                        bps += oldBps;
-                        oldBps = bps;
-                    }
-                    else
-                        bps = 0.0f;
-                }
-                else
-                    bps = 0.0f;
-            }
-
-            lastTransfair = ts;
-            startNewFrame();
-
-            if(data != NULL)
-            {
-                if(queueData != NULL)
-                {
-                    sprintf(toScreen, "%s (%d/%d)", data->name, queueData->current, queueData->packages);
-                    line = textToFrameMultiline(0, ALIGNED_CENTER, toScreen, MAX_CHARS);
-                }
-                else
-                    line = textToFrameMultiline(0, ALIGNED_CENTER, data->name, MAX_CHARS);
-
-                drawStatLine(line++, data->dltotal, data->dlnow + dlnow, bps, &data->eta);
-
-                if(queueData != NULL)
-                    drawStatLine(line++, queueData->dlSize, queueData->downloaded + dlnow, bps, &queueData->eta);
-
-                lineToFrame(line++, SCREEN_COLOR_WHITE);
-
-                sprintf(toScreen, "(%d/%d)", data->dcontent + 1, data->contents);
-                textToFrame(line, ALIGNED_CENTER, toScreen);
-            }
-            else
-                line = 0;
-
             if(dltotal)
             {
-                if(!rambuf)
-                    checkForQueueErrors();
+                uint32_t tmp = OSTicksToMilliseconds(ts - data->lastTransfair);
+                if(tmp)
+                {
+                    bps *= 1000.0f;
+                    bps /= tmp;
+                    bps *= 1.0f - SMOOTHING_FACTOR;
+                    data->oldBps *= SMOOTHING_FACTOR;
+                    bps += data->oldBps;
+                    data->oldBps = bps;
+                }
+                else bps = 0.0f;
+            }
+            else bps = 0.0f;
+        }
+        data->lastTransfair = ts;
 
-                frames = 60;
-                dltotal += fileSize;
-
-                strcpy(toScreen, localise("Downloading"));
-                strcat(toScreen, " ");
-                strcat(toScreen, name);
-                textToFrame(line, 0, toScreen);
-
-                getSpeedString(bps, toScreen);
-                textToFrame(line, ALIGNED_RIGHT, toScreen);
-
-                drawStatLine(++line, dltotal, dlnow, bps, &tmp);
+        if(data->data != NULL)
+        {
+            if(data->queueData != NULL)
+            {
+                sprintf(toScreen, "%s (%d/%d)", data->data->name, data->queueData->current, data->queueData->packages);
+                line = textToFrameMultiline(0, ALIGNED_CENTER, toScreen, MAX_CHARS);
             }
             else
-            {
-                frames = 1;
-                strcpy(toScreen, localise("Preparing"));
-                strcat(toScreen, " ");
-                strcat(toScreen, name);
-                textToFrame(line++, 0, toScreen);
-            }
+                line = textToFrameMultiline(0, ALIGNED_CENTER, data->data->name, MAX_CHARS);
 
-            writeScreenLog(++line);
-            drawFrame();
+            drawStatLine(line++, data->data->dltotal, data->data->dlnow + dlnow, bps, &data->data->eta);
+            if(data->queueData != NULL)
+                drawStatLine(line++, data->queueData->dlSize, data->queueData->downloaded + dlnow, bps, &data->queueData->eta);
+
+            lineToFrame(line++, SCREEN_COLOR_WHITE);
+            sprintf(toScreen, "(%d/%d)", data->data->dcontent + 1, data->data->contents);
+            textToFrame(line, ALIGNED_CENTER, toScreen);
         }
+        else line = 0;
 
-        showFrame();
-
-        if(cancelOverlay == NULL)
+        if(dltotal)
         {
-            if(vpad.trigger & VPAD_BUTTON_B)
-            {
-                strcpy(toScreen, localise("Do you really want to cancel?"));
-                strcat(toScreen, "\n\n" BUTTON_A " ");
-                strcat(toScreen, localise("Yes"));
-                strcat(toScreen, " || " BUTTON_B " ");
-                strcat(toScreen, localise("No"));
-                cancelOverlay = addErrorOverlay(toScreen);
-            }
+            if(!data->rambuf) checkForQueueErrors();
+            dltotal += data->fileSize;
+            const char *name = data->rambuf ? data->file : strrchr(data->file, '/') + 1;
+            sprintf(toScreen, "%s %s", localise("Downloading"), name);
+            textToFrame(line, 0, toScreen);
+            getSpeedString(bps, toScreen);
+            textToFrame(line, ALIGNED_RIGHT, toScreen);
+            uint32_t tmp;
+            drawStatLine(++line, dltotal, dlnow, bps, &tmp);
         }
         else
         {
-            if(vpad.trigger & VPAD_BUTTON_A)
-            {
-                cdata.error = CURLE_ABORTED_BY_CALLBACK;
-                closeCancelOverlay();
-                break;
-            }
-            if(vpad.trigger & VPAD_BUTTON_B)
-                closeCancelOverlay();
+            const char *name = data->rambuf ? data->file : strrchr(data->file, '/') + 1;
+            sprintf(toScreen, "%s %s", localise("Preparing"), name);
+            textToFrame(line++, 0, toScreen);
         }
+        writeScreenLog(++line);
     }
-
-    stopThread(dlThread, (int *)&ret);
-
-    t = OSGetSystemTime() - t;
-    addEntropy(&t, sizeof(OSTime));
-    if(data == NULL && cancelOverlay != NULL)
-        closeCancelOverlay();
-
-    debugPrintf("curl_easy_perform() returned: %d", ret);
-
-    if(rambuf)
-        fclose((FILE *)fp);
-    else
-        addToIOQueue(NULL, 0, 0, (FSAFileHandle)fp);
-
-    if(!AppRunning(true))
-        return 1;
-
-    if(ret != CURLE_OK)
-    {
-        debugPrintf("curl_easy_perform returned an error: %s (%d/%d)\nFile: %s", curlError, ret, cdata.error, rambuf ? "<RAM>" : file);
-
-        if(ret == CURLE_ABORTED_BY_CALLBACK)
-        {
-            switch(cdata.error)
-            {
-                case CURLE_ABORTED_BY_CALLBACK:
-                    return 1;
-                case CURLE_OK:
-                    break;
-                default:
-                    ret = cdata.error;
-            }
-        }
-
-        const char *te = translateCurlError(ret, curlError);
-        switch(ret)
-        {
-            case CURLE_RANGE_ERROR:
-                if(rambuf && rambuf->buf)
-                {
-                    MEMFreeToDefaultHeap(rambuf->buf);
-                    rambuf->buf = NULL;
-                    rambuf->size = 0;
-                }
-                int r = downloadFile(url, file, data, type, false, queueData, rambuf);
-                curlReuseConnection = false;
-                return r;
-            case CURLE_COULDNT_RESOLVE_HOST:
-            case CURLE_COULDNT_CONNECT:
-            case CURLE_OPERATION_TIMEDOUT:
-            case CURLE_GOT_NOTHING:
-            case CURLE_SEND_ERROR:
-            case CURLE_RECV_ERROR:
-            case CURLE_PARTIAL_FILE:
-            case CURLE_BAD_FUNCTION_ARGUMENT: // TODO: WUT bug
-                sprintf(toScreen, "%s:\n\t%s\n\n%s", "Network error", te, ret != CURLE_BAD_FUNCTION_ARGUMENT ? "check the network settings and try again" : "See https://github.com/V10lator/NUSspli/issues/302#issuecomment-2108134284");
-                break;
-            case CURLE_PEER_FAILED_VERIFICATION:
-            case CURLE_SSL_CONNECT_ERROR:
-                sprintf(toScreen, "%s:\n\t%s!\n\n%s", "SSL error", te, "check your Wii Us date and time settings");
-                break;
-            default:
-                sprintf(toScreen, "%s:\n\t%d %s", te, ret, curlError);
-                break;
-        }
-
-        if(data != NULL && cancelOverlay != NULL)
-            closeCancelOverlay();
-
-        if(showNetworkError(toScreen))
-        {
-            resetNetwork();
-            flushIOQueue(); // We flush here so the last file is completely on disc and closed before we retry.
-            return downloadFile(url, file, data, type, resume, queueData, rambuf);
-        }
-
-        resetNetwork();
-        return 1;
-    }
-    debugPrintf("curl_easy_perform executed successfully");
-
-    long resp;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &resp);
-    if(resp == 206) // Resumed download OK
-        resp = 200;
-
-    debugPrintf("The download returned: %u", resp);
-    if(resp != 200)
-    {
-        if(!rambuf)
-        {
-            flushIOQueue();
-            char *newFile = getStaticPathBuffer(2);
-            strcpy(newFile, file);
-            FSARemove(getFSAClient(), newFile);
-        }
-
-        if(resp == 404 && (type & FILE_TYPE_TMD) == FILE_TYPE_TMD) // Title.tmd not found
-        {
-            strcpy(toScreen, localise("The download of title.tmd failed with error: 404"));
-            strcat(toScreen, "\n\n");
-            strcat(toScreen, localise("The title cannot be found on the NUS, maybe the provided title ID doesn't exists or\nthe TMD was deleted"));
-            drawErrorFrame(toScreen, B_RETURN | Y_RETRY);
-
-            while(AppRunning(true))
-            {
-                if(app == APP_STATE_BACKGROUND)
-                    continue;
-                if(app == APP_STATE_RETURNING)
-                    drawErrorFrame(toScreen, B_RETURN | Y_RETRY);
-
-                showFrame();
-
-                if(vpad.trigger & VPAD_BUTTON_B)
-                    break;
-                if(vpad.trigger & VPAD_BUTTON_Y)
-                {
-                    if(rambuf && rambuf->buf)
-                    {
-                        MEMFreeToDefaultHeap(rambuf->buf);
-                        rambuf->buf = NULL;
-                        rambuf->size = 0;
-                    }
-                    return downloadFile(url, file, data, type, resume, queueData, rambuf);
-                }
-            }
-            return 1;
-        }
-        else if(resp == 404 && (type & FILE_TYPE_TIK) == FILE_TYPE_TIK)
-        { // Fake ticket needed
-            return 2;
-        }
-        else
-        {
-            sprintf(toScreen, "%s: %ld\n%s: %s\n\n", localise("The download returned a result different to 200 (OK)"), resp, localise("File"), rambuf ? file : prettyDir(file));
-            if(resp == 400)
-            {
-                strcat(toScreen, localise("Request failed. Try again"));
-                strcat(toScreen, "\n\n");
-            }
-
-            drawErrorFrame(toScreen, B_RETURN | Y_RETRY);
-
-            while(AppRunning(true))
-            {
-                if(app == APP_STATE_BACKGROUND)
-                    continue;
-                if(app == APP_STATE_RETURNING)
-                    drawErrorFrame(toScreen, B_RETURN | Y_RETRY);
-
-                showFrame();
-
-                if(vpad.trigger & VPAD_BUTTON_B)
-                    break;
-                if(vpad.trigger & VPAD_BUTTON_Y)
-                    return downloadFile(url, file, data, type, resume, queueData, rambuf);
-            }
-            return 1;
-        }
-    }
-
-    if(data != NULL)
-    {
-        curl_off_t dld;
-        ret = curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD_T, &dld);
-        if(ret != CURLE_OK)
-            dld = 0;
-
-        if(fileSize)
-            dld += fileSize;
-
-        data->dlnow += dld;
-        if(queueData != NULL)
-            queueData->downloaded += dld;
-    }
-
-    sprintf(toScreen, "Download %s finished!", name);
-    addToScreenLog(toScreen);
-    return 0;
+    drawFrame();
 }
 
-bool downloadTitle(const TMD *tmd, size_t tmdSize, const TitleEntry *titleEntry, const char *titleVer, char *folderName, bool inst, NUSDEV dlDev, bool toUSB, bool keepFiles, QUEUE_DATA *queueData)
+static void downloadFileUpdate(Screen *self)
 {
-    char tid[17];
-    hex(tmd->tid, 16, tid);
-    debugPrintf("Downloading title... tID: %s, tVer: %s, name: %s, folder: %s", tid, titleVer, titleEntry->name, folderName);
+    DownloadFileData *data = (DownloadFileData *)self->data;
 
-    char downloadUrl[256];
-    strcpy(downloadUrl, DOWNLOAD_URL);
-    strcat(downloadUrl, tid);
-    strcat(downloadUrl, "/");
-
-    if(folderName[0] == '\0')
-        for(size_t i = 0; i < strlen(titleEntry->name); ++i)
-            folderName[i] = isAllowedInFilename(titleEntry->name[i]) ? titleEntry->name[i] : '_';
-
-    strcpy(folderName + strlen(titleEntry->name), " [");
-    strcat(folderName, tid);
-    strcat(folderName, "]");
-
-    if(strlen(titleVer) > 0)
+    if(data->state == 0) // Initialize
     {
-        strcat(folderName, " v");
-        strcat(folderName, titleVer);
-    }
-
-    char *installDir = getStaticPathBuffer(3);
-    strcpy(installDir, dlDev == NUSDEV_USB01 ? INSTALL_DIR_USB1 : (dlDev == NUSDEV_USB02 ? INSTALL_DIR_USB2 : (dlDev == NUSDEV_SD ? INSTALL_DIR_SD : INSTALL_DIR_MLC)));
-    if(!dirExists(installDir))
-    {
-        debugPrintf("Creating directory \"%s\"", installDir);
-        FSError err = createDirectory(installDir);
-        if(err == FS_ERROR_OK)
-            addToScreenLog("Install directory successfully created");
+        if(data->rambuf)
+        {
+            data->fp = (void *)open_memstream(&data->rambuf->buf, &data->rambuf->size);
+            data->fileSize = 0;
+        }
         else
         {
-            char *toScreen = getToFrameBuffer();
-            strcpy(toScreen, translateFSErr(err));
-            showErrorFrame(toScreen);
-            return false;
-        }
-    }
-
-    strcat(installDir, folderName);
-    strcat(installDir, "/");
-
-    addToScreenLog("Started the download of \"%s\"", titleEntry->name);
-    addToScreenLog("The content will be saved on \"%s\"", prettyDir(installDir));
-
-    if(!dirExists(installDir))
-    {
-        debugPrintf("Creating directory \"%s\"", installDir);
-        FSError err = createDirectory(installDir);
-        if(err == FS_ERROR_OK)
-            addToScreenLog("Download directory successfully created");
-        else
-        {
-            char *toScreen = getToFrameBuffer();
-            strcpy(toScreen, translateFSErr(err));
-            showErrorFrame(toScreen);
-            return false;
-        }
-    }
-    else
-        addToScreenLog("WARNING: The download directory already exists");
-
-    char *idp = installDir + strlen(installDir);
-    strcpy(idp, "title.tmd");
-
-    FSAFileHandle fp = openFile(installDir, "w", tmdSize);
-    if(fp == 0)
-    {
-        showErrorFrame("Can't save title.tmd file!");
-        return false;
-    }
-
-    addToIOQueue(tmd, 1, tmdSize, fp);
-    addToIOQueue(NULL, 0, 0, fp);
-    addToScreenLog("title.tmd saved");
-
-    char *toScreen = getToFrameBuffer();
-    strcpy(toScreen, "=>Title type: ");
-    bool hasDependencies;
-    switch(getTidHighFromTid(tmd->tid)) // Title type
-    {
-        case TID_HIGH_GAME:
-            strcat(toScreen, "eShop or Packed");
-            hasDependencies = false;
-            break;
-        case TID_HIGH_DEMO:
-            strcat(toScreen, "eShop/Kiosk demo");
-            hasDependencies = false;
-            break;
-        case TID_HIGH_DLC:
-            strcat(toScreen, "eShop DLC");
-            hasDependencies = true;
-            break;
-        case TID_HIGH_UPDATE:
-            strcat(toScreen, "eShop Update");
-            hasDependencies = true;
-            break;
-        case TID_HIGH_SYSTEM_APP:
-            strcat(toScreen, "System Application");
-            hasDependencies = false;
-            break;
-        case TID_HIGH_SYSTEM_DATA:
-            strcat(toScreen, "System Data Archive");
-            hasDependencies = false;
-            break;
-        case TID_HIGH_SYSTEM_APPLET:
-            strcat(toScreen, "Applet");
-            hasDependencies = false;
-            break;
-        // vWii //
-        case TID_HIGH_VWII_IOS:
-            strcat(toScreen, "Wii IOS");
-            hasDependencies = false;
-            break;
-        case TID_HIGH_VWII_SYSTEM_APP:
-            strcat(toScreen, "vWii System Application");
-            hasDependencies = false;
-            break;
-        case TID_HIGH_VWII_SYSTEM:
-            strcat(toScreen, "vWii System Channel");
-            hasDependencies = false;
-            break;
-        default:
-            sprintf(toScreen + strlen(toScreen), "Unknown (0x%08X)", getTidHighFromTid(tmd->tid));
-            hasDependencies = false;
-            break;
-    }
-    addToScreenLog(toScreen);
-
-    char *dup = downloadUrl + strlen(downloadUrl);
-    strcpy(dup, "cetk");
-    strcpy(idp, "title.tik");
-
-    downloadData data = {
-        .name = titleEntry->name,
-        .contents = tmd->num_contents + 1,
-        .dcontent = 0,
-        .dlnow = 0,
-        .dltotal = 0,
-        .eta = -1,
-    };
-
-    if(!fileExists(installDir))
-    {
-        RAMBUF *tikBuf = allocRamBuf();
-        if(tikBuf == NULL)
-            return false;
-
-        data.cs = 0;
-        int tikRes = downloadFile(downloadUrl, installDir, &data, FILE_TYPE_TIK | FILE_TYPE_TORAM, false, queueData, tikBuf);
-        switch(tikRes)
-        {
-            case 2:
-                if(!generateTik(installDir, tmd))
-                    return false;
-
-                addToScreenLog("Fake ticket created successfully");
-                tikBuf->size = 0;
-                break;
-            case 0:
-                fp = openFile(installDir, "w", tikBuf->size);
-                if(fp == 0)
+            if(data->resume && fileExists(data->file))
+            {
+                data->fileSize = getFilesize(data->file);
+                if(data->fileSize != 0)
                 {
-                    freeRamBuf(tikBuf);
-                    showErrorFrame("Can't save title.tik file!");
-                    return false;
+                    if(data->data != NULL && data->data->cs)
+                    {
+                        if(data->fileSize == data->data->cs)
+                        {
+                            data->data->dlnow += data->fileSize;
+                            if(data->queueData) data->queueData->downloaded += data->fileSize;
+                            ResultCallback cb = data->callback;
+                            void *ud = data->userdata;
+                            screenPop();
+                            if(cb) cb(true, ud);
+                            return;
+                        }
+                        if(data->fileSize > data->data->cs) data->fileSize = 0; // Restart
+                    }
+                }
+            }
+            else data->fileSize = 0;
+            data->fp = (void *)openFile(data->file, data->fileSize ? "a" : "w", data->data ? data->data->cs : 0);
+        }
+
+        if(data->fp == NULL)
+        {
+            ResultCallback cb = data->callback;
+            void *ud = data->userdata;
+            screenPop();
+            if(cb) cb(false, ud);
+            return;
+        }
+
+        curlError[0] = '\0';
+        data->cdata.running = true;
+        data->cdata.error = CURLE_OK;
+        data->cdata.dlnow = 0;
+        data->cdata.dltotal = 0;
+        spinCreateLock(data->cdata.lock, SPINLOCK_FREE);
+
+        curl_easy_setopt(curl, CURLOPT_URL, data->url);
+        curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, curlReuseConnection ? 0L : 1L);
+        curlReuseConnection = true;
+        curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)data->fileSize);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, data->rambuf ? fwrite : (size_t(*)(const void *, size_t, size_t, FILE *))addToIOQueue);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, data->fp);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void *)&data->cdata);
+
+        data->t = OSGetSystemTime();
+        char *argv[1] = { (char *)&data->cdata };
+        data->dlThread = startThread("NUSspli downloader", THREAD_PRIORITY_HIGH, STACKSIZE_BIG, dlThreadMain, 1, (char *)argv, OS_THREAD_ATTRIB_AFFINITY_CPU0);
+        if(data->dlThread == NULL)
+        {
+            if(data->rambuf) fclose(data->fp); else addToIOQueue(NULL, 0, 0, (FSAFileHandle)data->fp);
+            ResultCallback cb = data->callback;
+            void *ud = data->userdata;
+            screenPop();
+            if(cb) cb(false, ud);
+            return;
+        }
+        data->lastTransfair = OSGetTick();
+        data->downloaded = 0;
+        data->oldBps = 0;
+        data->frames = 1;
+        data->state = 1; // Downloading
+    }
+    else if(data->state == 1) // Downloading
+    {
+        if(!data->cdata.running)
+        {
+            CURLcode ret;
+            stopThread(data->dlThread, (int *)&ret);
+            data->dlThread = NULL;
+            if(data->rambuf) fclose(data->fp); else addToIOQueue(NULL, 0, 0, (FSAFileHandle)data->fp);
+            data->fp = NULL;
+
+            if(ret != CURLE_OK)
+            {
+                // Handle error
+                const char *te = translateCurlError(ret, curlError);
+                char *toScreen = data->networkErrorMsg;
+                switch(ret)
+                {
+                    case CURLE_RANGE_ERROR:
+                        if(data->rambuf) { MEMFreeToDefaultHeap(data->rambuf->buf); data->rambuf->buf = NULL; data->rambuf->size = 0; }
+                        data->state = 0; // Retry from start
+                        return;
+                    case CURLE_COULDNT_RESOLVE_HOST:
+                    case CURLE_COULDNT_CONNECT:
+                    case CURLE_OPERATION_TIMEDOUT:
+                    case CURLE_GOT_NOTHING:
+                    case CURLE_SEND_ERROR:
+                    case CURLE_RECV_ERROR:
+                    case CURLE_PARTIAL_FILE:
+                    case CURLE_BAD_FUNCTION_ARGUMENT:
+                        sprintf(toScreen, "%s:\n\t%s\n\n%s", "Network error", te, "check the network settings and try again");
+                        break;
+                    case CURLE_PEER_FAILED_VERIFICATION:
+                    case CURLE_SSL_CONNECT_ERROR:
+                        sprintf(toScreen, "%s:\n\t%s!\n\n%s", "SSL error", te, "check your Wii Us date and time settings");
+                        break;
+                    default:
+                        sprintf(toScreen, "%s:\n\t%d %s", te, ret, curlError);
+                        break;
                 }
 
-                addToIOQueue(tikBuf->buf, 1, tikBuf->size, fp);
-                addToIOQueue(NULL, 0, 0, fp);
-                break;
-            default:
-                freeRamBuf(tikBuf);
-                return false;
-        }
+                if(autoResumeEnabled())
+                {
+                    data->networkErrorFrames = 9 * 60;
+                    strcat(toScreen, "\n\n");
+                    strcat(toScreen, localise("Next try in _ seconds."));
+                }
+                data->state = 3; // Error display
+                return;
+            }
 
-        ++data.dcontent;
-        strcpy(idp, "title.cert");
-        if(!fileExists(installDir))
+            long resp;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &resp);
+            if(resp == 206) resp = 200;
+
+            if(resp != 200)
+            {
+                if(!data->rambuf) { flushIOQueue(); FSARemove(getFSAClient(), data->file); }
+                if(resp == 404 && (data->type & FILE_TYPE_TIK) == FILE_TYPE_TIK)
+                {
+                    ResultCallback cb = data->callback;
+                    void *ud = data->userdata;
+                    screenPop();
+                    if(cb) cb(2, ud); // Need fake ticket
+                    return;
+                }
+                sprintf(data->networkErrorMsg, "%s: %ld\n%s: %s", localise("The download returned a result different to 200 (OK)"), resp, localise("File"), data->rambuf ? data->file : prettyDir(data->file));
+                data->state = 3;
+                return;
+            }
+
+            if(data->data)
+            {
+                curl_off_t dld;
+                curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD_T, &dld);
+                data->data->dlnow += (dld + data->fileSize);
+                if(data->queueData) data->queueData->downloaded += (dld + data->fileSize);
+            }
+            ResultCallback cb = data->callback;
+            void *ud = data->userdata;
+            screenPop();
+            if(cb) cb(true, ud);
+        }
+        else if(vpad.trigger & VPAD_BUTTON_B)
         {
-            if(generateCert(tmd, (TICKET *)tikBuf->buf, tikBuf->size, installDir))
-                addToScreenLog("Cert created!");
+            // Cancel?
+            data->cdata.error = CURLE_ABORTED_BY_CALLBACK;
+        }
+    }
+    else if(data->state == 3) // Error display
+    {
+        bool retry = false;
+        if(vpad.trigger & VPAD_BUTTON_B)
+        {
+            ResultCallback cb = data->callback;
+            void *ud = data->userdata;
+            screenPop();
+            if(cb) cb(false, ud);
+            return;
+        }
+        if(vpad.trigger & VPAD_BUTTON_Y) retry = true;
+        if(autoResumeEnabled() && --data->networkErrorFrames == 0) retry = true;
+
+        if(retry)
+        {
+            // Reset network logic
+            BOOL con;
+            if(ACIsApplicationConnected(&con).value == 0 && !con)
+            {
+                deinitDownloader();
+                socket_lib_finish();
+                NNResult nnres = ACClose();
+                while(ACGetCloseStatus(nnres).value != 0);
+                nnres = ACConnect();
+                if(nnres.value == 0)
+                {
+                    socket_lib_init();
+                    initDownloader();
+                }
+            }
+            data->state = 0;
+            self->dirty = true;
+        }
+    }
+}
+
+static void downloadFileExit(Screen *self)
+{
+    DownloadFileData *data = (DownloadFileData *)self->data;
+    if(data->dlThread) stopThread(data->dlThread, NULL);
+    if(data->fp) { if(data->rambuf) fclose(data->fp); else addToIOQueue(NULL, 0, 0, (FSAFileHandle)data->fp); }
+    MEMFreeToDefaultHeap(data);
+    MEMFreeToDefaultHeap(self);
+}
+
+void downloadFile(const char *url, char *file, downloadData *data, FileType type, bool resume, QUEUE_DATA *queueData, RAMBUF *rambuf, ResultCallback callback, void *userdata)
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    DownloadFileData *d = MEMAllocFromDefaultHeap(sizeof(DownloadFileData));
+    if(!self || !d) { if(self) MEMFreeToDefaultHeap(self); if(d) MEMFreeToDefaultHeap(d); if(callback) callback(false, userdata); return; }
+
+    OSBlockSet(d, 0, sizeof(DownloadFileData));
+    strncpy(d->url, url, 255);
+    strncpy(d->file, file, FS_MAX_PATH - 1);
+    d->data = data;
+    d->type = type;
+    d->resume = resume;
+    d->queueData = queueData;
+    d->rambuf = rambuf;
+    d->callback = callback;
+    d->userdata = userdata;
+    d->state = 0;
+
+    self->onUpdate = downloadFileUpdate;
+    self->onDraw = downloadFileDraw;
+    self->onExit = downloadFileExit;
+    self->data = d;
+    self->dirty = true;
+
+    screenPush(self);
+}
+
+typedef struct
+{
+    TMD *tmd;
+    size_t tmdSize;
+    const TitleEntry *titleEntry;
+    char titleVer[33];
+    char folderName[FS_MAX_PATH];
+    bool inst;
+    NUSDEV dlDev;
+    bool toUSB;
+    bool keepFiles;
+    QUEUE_DATA *queueData;
+    ResultCallback callback;
+    void *userdata;
+
+    // State
+    int state;
+    int contentIdx;
+    char installDir[FS_MAX_PATH];
+    char downloadUrl[256];
+    downloadData data;
+    RAMBUF *tikBuf;
+} DownloadTitleData;
+
+static void downloadTitleTaskDone(bool result, void *userdata);
+
+static void certDone(bool result, void *userdata)
+{
+    (void)result;
+    DownloadTitleData *data = (DownloadTitleData *)userdata;
+    data->state = 3; // Proceed to download contents
+}
+
+static void downloadTitleUpdate(Screen *self)
+{
+    DownloadTitleData *data = (DownloadTitleData *)self->data;
+    char tid[17];
+    hex(data->tmd->tid, 16, tid);
+
+    switch(data->state)
+    {
+        case 0: // Init dirs
+        {
+            strcpy(data->downloadUrl, DOWNLOAD_URL);
+            strcat(data->downloadUrl, tid);
+            strcat(data->downloadUrl, "/");
+
+            if(data->folderName[0] == '\0')
+            {
+                size_t i;
+                for(i = 0; i < strlen(data->titleEntry->name); ++i)
+                    data->folderName[i] = isAllowedInFilename(data->titleEntry->name[i]) ? data->titleEntry->name[i] : '_';
+                data->folderName[i] = '\0';
+            }
+            strcat(data->folderName, " [");
+            strcat(data->folderName, tid);
+            strcat(data->folderName, "]");
+            if(data->titleVer[0]) { strcat(data->folderName, " v"); strcat(data->folderName, data->titleVer); }
+
+            strcpy(data->installDir, data->dlDev == NUSDEV_USB01 ? INSTALL_DIR_USB1 : (data->dlDev == NUSDEV_USB02 ? INSTALL_DIR_USB2 : (data->dlDev == NUSDEV_SD ? INSTALL_DIR_SD : INSTALL_DIR_MLC)));
+            if(!dirExists(data->installDir)) createDirectory(data->installDir);
+            strcat(data->installDir, data->folderName);
+            strcat(data->installDir, "/");
+            if(!dirExists(data->installDir)) createDirectory(data->installDir);
+
+            char tmdPath[FS_MAX_PATH];
+            strcpy(tmdPath, data->installDir);
+            strcat(tmdPath, "title.tmd");
+            FSAFileHandle fp = openFile(tmdPath, "w", data->tmdSize);
+            if(fp) { addToIOQueue(data->tmd, 1, data->tmdSize, fp); addToIOQueue(NULL, 0, 0, fp); }
+
+            data->data.name = data->titleEntry->name;
+            data->data.contents = data->tmd->num_contents + 1;
+            data->data.dcontent = 0;
+            data->data.dlnow = 0;
+            data->data.dltotal = 0;
+            data->data.eta = -1;
+
+            for(int i = 0; i < data->tmd->num_contents; ++i)
+            {
+                data->data.dltotal += data->tmd->contents[i].size;
+                if(data->tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED)
+                {
+                    data->data.contents++;
+                    data->data.dltotal += getH3size(data->tmd->contents[i].size);
+                }
+            }
+
+            data->state = 1; // Download TIK
+            char tikUrl[256], tikPath[FS_MAX_PATH];
+            strcpy(tikUrl, data->downloadUrl); strcat(tikUrl, "cetk");
+            strcpy(tikPath, data->installDir); strcat(tikPath, "title.tik");
+            if(!fileExists(tikPath))
+            {
+                data->tikBuf = allocRamBuf();
+                downloadFile(tikUrl, tikPath, &data->data, FILE_TYPE_TIK | FILE_TYPE_TORAM, false, data->queueData, data->tikBuf, downloadTitleTaskDone, self);
+            }
+            else data->state = 2;
+            break;
+        }
+        case 2: // Cert
+        {
+            char certPath[FS_MAX_PATH];
+            strcpy(certPath, data->installDir); strcat(certPath, "title.cert");
+            if(!fileExists(certPath))
+            {
+                data->state = 20; // Waiting for cert
+                generateCert(data->tmd, (TICKET *)data->tikBuf->buf, data->tikBuf->size, certPath, certDone, data);
+                return;
+            }
+            data->state = 3;
+            data->contentIdx = 0;
+            break;
+        }
+        case 3: // Download contents
+        {
+            if(data->contentIdx >= data->tmd->num_contents)
+            {
+                data->state = 4; // Install
+                return;
+            }
+            char cid[9], appUrl[256], appPath[FS_MAX_PATH];
+            hex(data->tmd->contents[data->contentIdx].cid, 8, cid);
+            strcpy(appUrl, data->downloadUrl); strcat(appUrl, cid);
+            strcpy(appPath, data->installDir); strcat(appPath, cid); strcat(appPath, ".app");
+            data->data.dcontent++;
+            data->data.cs = data->tmd->contents[data->contentIdx].size;
+            data->state = 31; // Downloading .app
+            downloadFile(appUrl, appPath, &data->data, FILE_TYPE_APP, true, data->queueData, NULL, downloadTitleTaskDone, self);
+            break;
+        }
+        case 32: // Download .h3
+        {
+            if(data->tmd->contents[data->contentIdx].type & TMD_CONTENT_TYPE_HASHED)
+            {
+                char cid[9], h3Url[256], h3Path[FS_MAX_PATH];
+                hex(data->tmd->contents[data->contentIdx].cid, 8, cid);
+                strcpy(h3Url, data->downloadUrl); strcat(h3Url, cid); strcat(h3Url, ".h3");
+                strcpy(h3Path, data->installDir); strcat(h3Path, cid); strcat(h3Path, ".h3");
+                data->data.dcontent++;
+                data->data.cs = getH3size(data->tmd->contents[data->contentIdx].size);
+                data->state = 33; // Downloading .h3
+                downloadFile(h3Url, h3Path, &data->data, FILE_TYPE_H3, true, data->queueData, NULL, downloadTitleTaskDone, self);
+            }
             else
             {
-                freeRamBuf(tikBuf);
-                return false;
+                data->contentIdx++;
+                data->state = 3;
             }
+            break;
         }
-        else
-            addToScreenLog("Cert skipped!");
-
-        freeRamBuf(tikBuf);
-    }
-    else
-        addToScreenLog("title.tik skipped!");
-
-    if(!AppRunning(true))
-        return false;
-
-    // Get .app and .h3 files
-    curl_off_t as;
-    for(int i = 0; i < tmd->num_contents; ++i)
-    {
-        as = tmd->contents[i].size;
-        data.dltotal += as;
-        if(tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED)
+        case 4: // Install
         {
-            ++data.contents;
-            data.dltotal += getH3size(as);
+            ResultCallback cb = data->callback;
+            void *ud = data->userdata;
+            if(data->inst)
+            {
+                bool hasDependencies = false;
+                switch(getTidHighFromTid(data->tmd->tid))
+                {
+                    case TID_HIGH_DLC: case TID_HIGH_UPDATE: hasDependencies = true; break;
+                }
+                const char *titleName = data->titleEntry->name;
+                NUSDEV dlDev = data->dlDev;
+                char *installDir = MEMAllocFromDefaultHeap(strlen(data->installDir) + 1);
+                strcpy(installDir, data->installDir);
+                bool toUSB = data->toUSB;
+                bool keepFiles = data->keepFiles;
+                TMD *tmd = data->tmd;
+                data->tmd = NULL; // Hand over ownership
+                screenPop();
+                install(titleName, hasDependencies, dlDev, installDir, toUSB, keepFiles, tmd, cb, ud);
+                MEMFreeToDefaultHeap(installDir);
+            }
+            else
+            {
+               screenPop();
+               if(cb) cb(true, ud);
+            }
+            break;
         }
+        default: break;
     }
+}
 
-    char *dupp = dup + 8;
-    char *idpp = idp + 8;
-    for(int i = 0; i < tmd->num_contents && AppRunning(true); ++i)
+static void downloadTitleTaskDone(bool result, void *userdata)
+{
+    Screen *self = (Screen *)userdata;
+    DownloadTitleData *data = (DownloadTitleData *)self->data;
+    if(result == 2 && data->state == 1) // Need fake ticket
     {
-        hex(tmd->contents[i].cid, 8, dup);
-        OSBlockMove(idp, dup, 8, false);
-        strcpy(idpp, ".app");
-
-        data.cs = tmd->contents[i].size;
-        if(downloadFile(downloadUrl, installDir, &data, FILE_TYPE_APP, true, queueData, NULL) == 1)
-            return false;
-
-        ++data.dcontent;
-
-        if(tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED)
-        {
-            strcpy(dupp, ".h3");
-            strcpy(idpp, ".h3");
-            data.cs = getH3size(tmd->contents[i].size);
-
-            if(downloadFile(downloadUrl, installDir, &data, FILE_TYPE_H3, true, queueData, NULL) == 1)
-                return false;
-
-            ++data.dcontent;
-        }
+        char tikPath[FS_MAX_PATH];
+        strcpy(tikPath, data->installDir); strcat(tikPath, "title.tik");
+        generateTik(tikPath, data->tmd);
+        data->state = 2;
+        return;
     }
-
-    if(cancelOverlay != NULL)
-        closeCancelOverlay();
-
-    if(!AppRunning(true))
-        return false;
-
-    bool ret;
-    if(inst)
+    if(!result)
     {
-        *idp = '\0';
-        ret = install(titleEntry->name, hasDependencies, dlDev, installDir, toUSB, keepFiles, tmd);
+        ResultCallback cb = data->callback;
+        void *ud = data->userdata;
+        screenPop();
+        if(cb) cb(false, ud);
+        return;
     }
-    else
-        ret = true;
 
-    return ret;
+    if(data->state == 1) {
+        char tikPath[FS_MAX_PATH];
+        strcpy(tikPath, data->installDir); strcat(tikPath, "title.tik");
+        FSAFileHandle fp = openFile(tikPath, "w", data->tikBuf->size);
+        if(fp) { addToIOQueue(data->tikBuf->buf, 1, data->tikBuf->size, fp); addToIOQueue(NULL, 0, 0, fp); }
+        data->state = 2;
+    }
+    else if(data->state == 31) data->state = 32;
+    else if(data->state == 33) { data->contentIdx++; data->state = 3; }
+}
+
+static void downloadTitleExit(Screen *self)
+{
+    DownloadTitleData *data = (DownloadTitleData *)self->data;
+    if(data->tikBuf) freeRamBuf(data->tikBuf);
+    if(data->tmd) MEMFreeToDefaultHeap(data->tmd);
+    MEMFreeToDefaultHeap(data);
+    MEMFreeToDefaultHeap(self);
+}
+
+void downloadTitle(const TMD *tmd, size_t tmdSize, const TitleEntry *titleEntry, const char *titleVer, char *folderName, bool inst, NUSDEV dlDev, bool toUSB, bool keepFiles, QUEUE_DATA *queueData, ResultCallback callback, void *userdata)
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    DownloadTitleData *data = MEMAllocFromDefaultHeap(sizeof(DownloadTitleData));
+    if(!self || !data) { if(self) MEMFreeToDefaultHeap(self); if(data) MEMFreeToDefaultHeap(data); if(callback) callback(false, userdata); return; }
+
+    OSBlockSet(data, 0, sizeof(DownloadTitleData));
+    data->tmd = (TMD *)MEMAllocFromDefaultHeap(tmdSize);
+    memcpy(data->tmd, tmd, tmdSize);
+    data->tmdSize = tmdSize;
+    data->titleEntry = titleEntry;
+    strncpy(data->titleVer, titleVer, 32);
+    if(folderName) strncpy(data->folderName, folderName, FS_MAX_PATH - 1);
+    data->inst = inst;
+    data->dlDev = dlDev;
+    data->toUSB = toUSB;
+    data->keepFiles = keepFiles;
+    data->queueData = queueData;
+    data->callback = callback;
+    data->userdata = userdata;
+    data->state = 0;
+
+    self->onUpdate = downloadTitleUpdate;
+    self->onDraw = NULL;
+    self->onExit = downloadTitleExit;
+    self->data = data;
+    self->dirty = false;
+
+    screenPush(self);
 }
 
 RAMBUF *allocRamBuf()
 {
     RAMBUF *ret = MEMAllocFromDefaultHeap(sizeof(RAMBUF));
-    if(ret == NULL)
-        return NULL;
-
+    if(ret == NULL) return NULL;
     ret->buf = NULL;
     ret->size = 0;
     return ret;
@@ -1263,8 +1040,6 @@ RAMBUF *allocRamBuf()
 
 void freeRamBuf(RAMBUF *rambuf)
 {
-    if(rambuf->buf != NULL)
-        MEMFreeToDefaultHeap(rambuf->buf);
-
+    if(rambuf->buf != NULL) MEMFreeToDefaultHeap(rambuf->buf);
     MEMFreeToDefaultHeap(rambuf);
 }

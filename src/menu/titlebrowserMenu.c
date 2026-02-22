@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2022 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -22,6 +22,7 @@
 #include <ctype.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include <config.h>
 #include <file.h>
@@ -34,6 +35,7 @@
 #include <menu/utils.h>
 #include <queue.h>
 #include <renderer.h>
+#include <screen.h>
 #include <state.h>
 #include <titles.h>
 #include <utils.h>
@@ -45,18 +47,27 @@
 
 #define MAX_TITLEBROWSER_LINES (MAX_LINES - 5)
 
-static TitleEntry **filteredTitleEntries;
-static size_t filteredTitleEntrySize;
-static size_t oldPos;
-
-static void drawTBMenuFrame(const TITLE_CATEGORY tab, const size_t pos, const size_t cursor, char *search)
+typedef struct
 {
+    TITLE_CATEGORY tab;
+    size_t cursor;
+    size_t pos;
+    char search[129];
+    size_t oldPos;
+    TitleEntry **filteredTitleEntries;
+    size_t filteredTitleEntrySize;
+    uint32_t oldHold;
+    size_t frameCount;
+} TitleBrowserData;
+
+static void drawTBMenuFrame(Screen *self)
+{
+    TitleBrowserData *data = (TitleBrowserData *)self->data;
     startNewFrame();
 
-    // Games, Updates, DLC, Demos, All
     const char *tabLabels[5] = { localise("Games"), localise("Updates"), localise("DLC"), localise("Demos"), localise("All") };
     for(uint32_t i = 0; i < 5; ++i)
-        tabToFrame(0, i, tabLabels[i], i == tab);
+        tabToFrame(0, i, tabLabels[i], i == data->tab);
 
     boxToFrame(1, MAX_LINES - 3);
 
@@ -74,363 +85,176 @@ static void drawTBMenuFrame(const TITLE_CATEGORY tab, const size_t pos, const si
         strcat(toFrame, " || ");
         strcat(toFrame, localise(BUTTON_MINUS " to open the queue"));
     }
-
     textToFrame(MAX_LINES - 1, ALIGNED_CENTER, toFrame);
 
-    size_t j;
-    size_t max;
-    size_t l;
-    if(pos != oldPos)
+    if(data->pos != data->oldPos)
     {
-        filteredTitleEntrySize = getTitleEntriesSize(tab);
-        const TitleEntry *titleEntrys = getTitleEntries(tab);
+        data->filteredTitleEntrySize = getTitleEntriesSize(data->tab);
+        const TitleEntry *titleEntrys = getTitleEntries(data->tab);
         MCPRegion currentRegion = getRegion();
-        l = 0;
+        size_t l = 0;
 
-        if(search[0] != '\0')
+        if(data->search[0] != '\0')
         {
-            do
-                search[l] = tolower(search[l]);
-            while(search[l++]);
+            char searchLower[129];
+            strcpy(searchLower, data->search);
+            for(size_t i = 0; searchLower[i]; ++i) searchLower[i] = tolower(searchLower[i]);
 
-            l = 0;
-            char *ptr[2];
-            bool found;
             char tmpName[MAX_TITLENAME_LENGTH];
-            for(size_t i = 0; i < filteredTitleEntrySize; ++i)
+            for(size_t i = 0; i < data->filteredTitleEntrySize; ++i)
             {
-                if(!(currentRegion & titleEntrys[i].region))
-                    continue;
-
-                max = strlen(titleEntrys[i].name);
-                for(j = 0; j < max; ++j)
-                    tmpName[j] = tolower(titleEntrys[i].name[j]);
-
-                tmpName[j] = '\0';
-                ptr[0] = search;
-                ptr[1] = strstr(ptr[0], " ");
-                while(true)
-                {
-                    if(ptr[1] != NULL)
-                        ptr[1][0] = '\0';
-
-                    found = strstr(tmpName, ptr[0]) != NULL;
-
-                    if(ptr[1] != NULL)
-                    {
-                        ptr[1][0] = ' ';
-                        if(found)
-                        {
-                            ptr[0] = ptr[1];
-                            ptr[1] = strstr(++ptr[0], " ");
-                        }
-                        else
-                            break;
-                    }
-                    else
-                        break;
-                }
-
-                if(found)
-                    filteredTitleEntries[l++] = (TitleEntry *)titleEntrys + i;
+                if(!(currentRegion & titleEntrys[i].region)) continue;
+                size_t max = strlen(titleEntrys[i].name);
+                for(size_t j = 0; j < max; ++j) tmpName[j] = tolower(titleEntrys[i].name[j]);
+                tmpName[max] = '\0';
+                if(strstr(tmpName, searchLower))
+                    data->filteredTitleEntries[l++] = (TitleEntry *)titleEntrys + i;
             }
         }
         else
-            for(size_t i = 0; i < filteredTitleEntrySize; ++i)
+            for(size_t i = 0; i < data->filteredTitleEntrySize; ++i)
                 if(currentRegion & titleEntrys[i].region)
-                    filteredTitleEntries[l++] = (TitleEntry *)titleEntrys + i;
+                    data->filteredTitleEntries[l++] = (TitleEntry *)titleEntrys + i;
 
-        filteredTitleEntrySize = l;
+        data->filteredTitleEntrySize = l;
+        data->oldPos = data->pos;
     }
 
-    j = filteredTitleEntrySize - pos;
-    max = j < MAX_TITLEBROWSER_LINES ? j : MAX_TITLEBROWSER_LINES;
+    size_t max = data->filteredTitleEntrySize - data->pos;
+    if(max > MAX_TITLEBROWSER_LINES) max = MAX_TITLEBROWSER_LINES;
     MCPTitleListType titleList __attribute__((__aligned__(0x40)));
     TitleData *title;
     bool inQueue;
     for(size_t i = 0; i < max; ++i)
     {
-        l = i + 2;
-        if(cursor == i)
-            arrowToFrame(l, 1);
+        size_t l = i + 2;
+        if(data->cursor == i) arrowToFrame(l, 1);
+        size_t j = i + data->pos;
+        if(MCP_GetTitleInfo(mcpHandle, data->filteredTitleEntries[j]->tid, &titleList) == 0) checkmarkToFrame(l, 4);
+        flagToFrame(l, 7, data->filteredTitleEntries[j]->region);
 
-        j = i + pos;
-        if(MCP_GetTitleInfo(mcpHandle, filteredTitleEntries[j]->tid, &titleList) == 0)
-            checkmarkToFrame(l, 4);
-
-        flagToFrame(l, 7, filteredTitleEntries[j]->region);
-
-        if(tab == TITLE_CATEGORY_ALL)
+        if(data->tab == TITLE_CATEGORY_ALL)
         {
-            if(isDLC(filteredTitleEntries[j]->tid))
-                strcpy(toFrame, "[DLC] ");
-            else if(isUpdate(filteredTitleEntries[j]->tid))
-                strcpy(toFrame, "[UPD] ");
-            else
-                toFrame[0] = '\0';
-
-            strcat(toFrame, filteredTitleEntries[j]->name);
+            if(isDLC(data->filteredTitleEntries[j]->tid)) strcpy(toFrame, "[DLC] ");
+            else if(isUpdate(data->filteredTitleEntries[j]->tid)) strcpy(toFrame, "[UPD] ");
+            else toFrame[0] = '\0';
+            strcat(toFrame, data->filteredTitleEntries[j]->name);
         }
-        else
-            strcpy(toFrame, filteredTitleEntries[j]->name);
+        else strcpy(toFrame, data->filteredTitleEntries[j]->name);
 
         inQueue = false;
-        forEachListEntry(getTitleQueue(), title)
-        {
-            if(title->entry == filteredTitleEntries[j])
-            {
-                inQueue = true;
-                break;
-            }
-        }
-
-        if(inQueue)
-            textToFrameColoredCut(l, 10, toFrame, SCREEN_COLOR_YELLOW, (SCREEN_WIDTH - (FONT_SIZE << 1)) - (getSpaceWidth() * 11));
-        else
-            textToFrameCut(l, 10, toFrame, (SCREEN_WIDTH - (FONT_SIZE << 1)) - (getSpaceWidth() * 11));
+        forEachListEntry(getTitleQueue(), title) { if(title->entry == data->filteredTitleEntries[j]) { inQueue = true; break; } }
+        if(inQueue) textToFrameColoredCut(l, 10, toFrame, SCREEN_COLOR_YELLOW, (SCREEN_WIDTH - (FONT_SIZE << 1)) - (getSpaceWidth() * 11));
+        else textToFrameCut(l, 10, toFrame, (SCREEN_WIDTH - (FONT_SIZE << 1)) - (getSpaceWidth() * 11));
     }
     drawFrame();
 }
 
+static void titleBrowserExit(Screen *self)
+{
+    TitleBrowserData *data = (TitleBrowserData *)self->data;
+    if(data)
+    {
+        if(data->filteredTitleEntries) MEMFreeToDefaultHeap(data->filteredTitleEntries);
+        MEMFreeToDefaultHeap(data);
+    }
+    MEMFreeToDefaultHeap(self);
+}
+
+static void searchCallback(bool ok, const char *text, void *userdata)
+{
+    Screen *s = (Screen *)userdata;
+    TitleBrowserData *d = (TitleBrowserData *)s->data;
+    if(ok && text)
+    {
+        strncpy(d->search, text, 128);
+        d->search[128] = '\0';
+        d->cursor = d->pos = 0;
+        d->oldPos = 99;
+        s->dirty = true;
+    }
+}
+
+static void titleBrowserUpdate(Screen *self)
+{
+    TitleBrowserData *data = (TitleBrowserData *)self->data;
+    bool mov = data->filteredTitleEntrySize > MAX_TITLEBROWSER_LINES;
+    bool dpadAction;
+
+    if(vpad.trigger & VPAD_BUTTON_A)
+    {
+        const TitleEntry *entry = data->filteredTitleEntries[data->cursor + data->pos];
+        predownloadMenu(entry);
+        return;
+    }
+
+    if(vpad.trigger & VPAD_BUTTON_B)
+    {
+        screenPop();
+        return;
+    }
+
+    if(vpad.hold & VPAD_BUTTON_UP)
+    {
+        if(data->oldHold != VPAD_BUTTON_UP) { data->oldHold = VPAD_BUTTON_UP; data->frameCount = 30; dpadAction = true; }
+        else if(data->frameCount == 0) dpadAction = true;
+        else { --data->frameCount; dpadAction = false; }
+        if(dpadAction)
+        {
+            if(data->cursor) data->cursor--;
+            else if(mov && data->pos) data->pos--;
+            else if(!mov) data->cursor = data->filteredTitleEntrySize - 1;
+            else { data->cursor = MAX_TITLEBROWSER_LINES - 1; data->pos = data->filteredTitleEntrySize - MAX_TITLEBROWSER_LINES; }
+            data->oldPos = 99; self->dirty = true;
+        }
+    }
+    else if(vpad.hold & VPAD_BUTTON_DOWN)
+    {
+        if(data->oldHold != VPAD_BUTTON_DOWN) { data->oldHold = VPAD_BUTTON_DOWN; data->frameCount = 30; dpadAction = true; }
+        else if(data->frameCount == 0) dpadAction = true;
+        else { --data->frameCount; dpadAction = false; }
+        if(dpadAction)
+        {
+            if(data->cursor + data->pos >= data->filteredTitleEntrySize - 1) { data->cursor = data->pos = 0; }
+            else if(data->cursor < MAX_TITLEBROWSER_LINES - 1) data->cursor++;
+            else data->pos++;
+            data->oldPos = 99; self->dirty = true;
+        }
+    }
+
+    if(vpad.trigger & VPAD_BUTTON_X) { downloadMenu(); return; }
+    if(vpad.trigger & VPAD_BUTTON_MINUS && getListSize(getTitleQueue())) { queueMenu(); self->dirty = true; }
+    if(vpad.trigger & VPAD_BUTTON_Y) { showKeyboard(KEYBOARD_LAYOUT_NORMAL, KEYBOARD_TYPE_NORMAL, CHECK_NONE, 128, false, data->search, localise("Search"), searchCallback, self); }
+
+    if(vpad.trigger & (VPAD_BUTTON_R | VPAD_BUTTON_ZR | VPAD_BUTTON_PLUS))
+    {
+        data->tab = (data->tab + 1) % 5;
+        data->cursor = data->pos = 0; data->oldPos = 99; self->dirty = true;
+    }
+    else if(vpad.trigger & (VPAD_BUTTON_L | VPAD_BUTTON_ZL))
+    {
+        data->tab = (data->tab + 4) % 5;
+        data->cursor = data->pos = 0; data->oldPos = 99; self->dirty = true;
+    }
+
+    if(data->oldHold && !(vpad.hold & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN))) data->oldHold = 0;
+}
+
+static void titleBrowserDraw(Screen *self) { drawTBMenuFrame(self); }
+
+Screen *titleBrowserScreenGet()
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    TitleBrowserData *data = MEMAllocFromDefaultHeap(sizeof(TitleBrowserData));
+    OSBlockSet(data, 0, sizeof(TitleBrowserData));
+    data->tab = TITLE_CATEGORY_GAME; data->oldPos = 99;
+    data->filteredTitleEntries = (TitleEntry **)MEMAllocFromDefaultHeap(getTitleEntriesSize(TITLE_CATEGORY_ALL) * sizeof(uintptr_t));
+    self->onUpdate = titleBrowserUpdate; self->onDraw = titleBrowserDraw; self->onExit = titleBrowserExit; self->data = data; self->dirty = true;
+    return self;
+}
+
 void titleBrowserMenu()
 {
-    filteredTitleEntrySize = getTitleEntriesSize(TITLE_CATEGORY_ALL);
-    filteredTitleEntries = (TitleEntry **)MEMAllocFromDefaultHeap(filteredTitleEntrySize * sizeof(uintptr_t));
-    if(filteredTitleEntries == NULL)
-    {
-        debugPrintf("Titlebrowser: OUT OF MEMORY!");
-        return;
-    }
-
-    TITLE_CATEGORY tab = TITLE_CATEGORY_GAME;
-    size_t cursor = 0;
-    size_t pos = 0;
-    char search[129];
-    search[0] = u'\0';
-    oldPos = 99;
-    bool redraw;
-    const TitleEntry *entry;
-    uint32_t oldHold = 0;
-    size_t frameCount = 0;
-    bool dpadAction;
-    bool mov;
-loop:
-    redraw = true;
-
-    while(AppRunning(true))
-    {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
-        if(app == APP_STATE_RETURNING)
-            redraw = true;
-
-        if(redraw)
-        {
-            drawTBMenuFrame(tab, pos, cursor, search);
-            mov = filteredTitleEntrySize > MAX_TITLEBROWSER_LINES;
-            redraw = false;
-        }
-        showFrame();
-
-        if(vpad.trigger & VPAD_BUTTON_A)
-        {
-            entry = filteredTitleEntries[cursor + pos];
-            break;
-        }
-
-        if(vpad.trigger & VPAD_BUTTON_B)
-        {
-            MEMFreeToDefaultHeap(filteredTitleEntries);
-            return;
-        }
-
-        if(vpad.hold & VPAD_BUTTON_UP)
-        {
-            if(oldHold != VPAD_BUTTON_UP)
-            {
-                oldHold = VPAD_BUTTON_UP;
-                frameCount = 30;
-                dpadAction = true;
-            }
-            else if(frameCount == 0)
-                dpadAction = true;
-            else
-            {
-                --frameCount;
-                dpadAction = false;
-            }
-
-            if(dpadAction)
-            {
-                if(cursor)
-                    cursor--;
-                else
-                {
-                    if(mov)
-                    {
-                        if(pos)
-                            pos--;
-                        else
-                        {
-                            cursor = MAX_TITLEBROWSER_LINES - 1;
-                            pos = filteredTitleEntrySize - MAX_TITLEBROWSER_LINES;
-                        }
-                    }
-                    else
-                        cursor = filteredTitleEntrySize - 1;
-                }
-
-                redraw = true;
-            }
-        }
-        else if(vpad.hold & VPAD_BUTTON_DOWN)
-        {
-            if(oldHold != VPAD_BUTTON_DOWN)
-            {
-                oldHold = VPAD_BUTTON_DOWN;
-                frameCount = 30;
-                dpadAction = true;
-            }
-            else if(frameCount == 0)
-                dpadAction = true;
-            else
-            {
-                --frameCount;
-                dpadAction = false;
-            }
-
-            if(dpadAction)
-            {
-                if(cursor + pos >= filteredTitleEntrySize - 1 || cursor >= MAX_TITLEBROWSER_LINES - 1)
-                {
-                    if(!mov || ++pos + cursor >= filteredTitleEntrySize)
-                        cursor = pos = 0;
-                }
-                else
-                    ++cursor;
-
-                redraw = true;
-            }
-        }
-        else if(mov)
-        {
-            if(vpad.hold & VPAD_BUTTON_RIGHT)
-            {
-                if(oldHold != VPAD_BUTTON_RIGHT)
-                {
-                    oldHold = VPAD_BUTTON_RIGHT;
-                    frameCount = 30;
-                    dpadAction = true;
-                }
-                else if(frameCount == 0)
-                    dpadAction = true;
-                else
-                {
-                    --frameCount;
-                    dpadAction = false;
-                }
-
-                if(dpadAction)
-                {
-                    pos += MAX_TITLEBROWSER_LINES;
-                    if(pos >= filteredTitleEntrySize)
-                        pos = 0;
-                    cursor = 0;
-                    redraw = true;
-                }
-            }
-            else if(vpad.hold & VPAD_BUTTON_LEFT)
-            {
-                if(oldHold != VPAD_BUTTON_LEFT)
-                {
-                    oldHold = VPAD_BUTTON_LEFT;
-                    frameCount = 30;
-                    dpadAction = true;
-                }
-                else if(frameCount == 0)
-                    dpadAction = true;
-                else
-                {
-                    --frameCount;
-                    dpadAction = false;
-                }
-
-                if(dpadAction)
-                {
-                    if(pos >= MAX_TITLEBROWSER_LINES)
-                        pos -= MAX_TITLEBROWSER_LINES;
-                    else
-                        pos = filteredTitleEntrySize - MAX_TITLEBROWSER_LINES;
-                    cursor = 0;
-                    redraw = true;
-                }
-            }
-        }
-
-        if(vpad.trigger & VPAD_BUTTON_X)
-        {
-            MEMFreeToDefaultHeap(filteredTitleEntries);
-            if(!downloadMenu())
-                titleBrowserMenu();
-            return;
-        }
-
-        if(vpad.trigger & VPAD_BUTTON_MINUS && getListSize(getTitleQueue()))
-        {
-            if(queueMenu())
-                return;
-
-            redraw = true;
-        }
-
-        if(vpad.trigger & VPAD_BUTTON_Y)
-        {
-            char oldSearch[sizeof(search)];
-            strcpy(oldSearch, search);
-            showKeyboard(KEYBOARD_LAYOUT_NORMAL, KEYBOARD_TYPE_NORMAL, search, CHECK_NONE, 128, false, search, localise("Search"));
-            if(strcmp(oldSearch, search) != 0)
-            {
-                cursor = pos = 0;
-                redraw = true;
-            }
-        }
-
-        if(vpad.trigger & VPAD_BUTTON_R || vpad.trigger & VPAD_BUTTON_ZR || vpad.trigger & VPAD_BUTTON_PLUS)
-        {
-            size_t tt = (size_t)tab;
-            if(++tt > TITLE_CATEGORY_ALL)
-                tt = (size_t)TITLE_CATEGORY_GAME;
-
-            tab = (TITLE_CATEGORY)tt;
-            cursor = pos = 0;
-            redraw = true;
-        }
-        else if(vpad.trigger & VPAD_BUTTON_L || vpad.trigger & VPAD_BUTTON_ZL)
-        {
-            if(tab == TITLE_CATEGORY_GAME)
-                tab = TITLE_CATEGORY_ALL;
-            else
-            {
-                size_t tt = (size_t)tab;
-                tt--;
-                tab = (TITLE_CATEGORY)tt;
-            }
-
-            cursor = pos = 0;
-            redraw = true;
-        }
-
-        if(oldHold && !(vpad.hold & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN | VPAD_BUTTON_LEFT | VPAD_BUTTON_RIGHT)))
-            oldHold = 0;
-    }
-    if(!AppRunning(true))
-    {
-        MEMFreeToDefaultHeap(filteredTitleEntries);
-        return;
-    }
-
-    if(predownloadMenu(entry)) // entry is initialised
-        goto loop;
-
-    MEMFreeToDefaultHeap(filteredTitleEntries);
+    Screen *s = titleBrowserScreenGet();
+    if(s) screenPush(s);
 }

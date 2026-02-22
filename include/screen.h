@@ -19,16 +19,32 @@
 
 #pragma once
 
-#include <wut-fixups.h>
-
-#include <titles.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-    void predownloadMenu(const TitleEntry *entry);
+    typedef struct Screen Screen;
+
+    struct Screen
+    {
+        void (*onUpdate)(Screen *self);
+        void (*onDraw)(Screen *self);
+        void (*onExit)(Screen *self);
+        void *data;
+        bool dirty;
+    };
+
+    void screenInit();
+    void screenExit();
+
+    void screenPush(Screen *screen);
+    void screenPop();
+    Screen *screenGetTop();
+
+    void screenMainLoop();
 
 #ifdef __cplusplus
 }

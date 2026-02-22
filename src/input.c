@@ -1,8 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2022 V10lator <v10lator@myway.de>                    *
- * Copyright (c) 2022 Xpl0itU <DaThinkingChair@protonmail.com>             *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -20,572 +19,233 @@
 
 #include <wut-fixups.h>
 
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+
+#include <cfw.h>
 #include <config.h>
-#include <crypto.h>
 #include <input.h>
-#include <menu/utils.h>
-#include <messages.h>
+#include <localisation.h>
+#include <osdefs.h>
 #include <renderer.h>
+#include <screen.h>
 #include <state.h>
-#include <swkbd_wrapper.h>
-#include <thread.h>
 #include <utils.h>
 
 #pragma GCC diagnostic ignored "-Wundef"
+#include <coreinit/cache.h>
+#include <coreinit/memdefaultheap.h>
 #include <coreinit/memory.h>
+#include <coreinit/thread.h>
+#include <nn/swkbd.h>
 #include <padscore/kpad.h>
-#include <padscore/wpad.h>
-#include <vpad/input.h>
 #pragma GCC diagnostic pop
 
-#define SWKBD_QUEUE_SIZE 8
-
-// WIP. This need a better implementation
-
-FSClient swkbdFsclient;
 VPADStatus vpad;
-static const KPADStatus kpad[4];
-static const Swkbd_ControllerInfo controllerInfo = {
-    .vpad = &vpad,
-    .kpad[0] = kpad,
-    .kpad[1] = kpad + 1,
-    .kpad[2] = kpad + 2,
-    .kpad[3] = kpad + 3
-};
-
-static ControllerType lastUsedController;
-
-static void *io = NULL;
-
-static Swkbd_CreateArg createArg = { .workMemory = NULL, .unk_0x08 = 0 };
-static Swkbd_AppearArg appearArg;
-
-static OSMessageQueue swkbd_queue;
-static OSMessage swkbd_msg[SWKBD_QUEUE_SIZE];
-
-static OSTime lastButtonPress = 0;
-
-typedef struct
-{
-    size_t globalMaxlength;
-    bool globalLimit;
-    bool okButtonEnabled;
-    OSThread *calcThread;
-} SWKBD_Args;
-
-static bool isUrl(char c)
-{
-    return isNumber(c) || isLowercase(c) || isUppercase(c) || c == '.' || c == '/' || c == ':' || c == '%' || c == '-' || c == '_'; // TODO
-}
-
-typedef bool (*checkingFunction)(char);
-
-static int calcThreadMain(int argc, const char **argv)
-{
-    (void)argc;
-    (void)argv;
-
-    OSMessage msg;
-    do
-    {
-        OSReceiveMessage(&swkbd_queue, &msg, OS_MESSAGE_FLAGS_BLOCKING);
-        if(msg.message == NUSSPLI_MESSAGE_NONE)
-            Swkbd_CalcSubThreadFont();
-    } while(msg.message != NUSSPLI_MESSAGE_EXIT);
-
-    return 0;
-}
-
-static void SWKBD_Render(SWKBD_Args *args, KeyboardChecks check)
-{
-    char *inputFormString = Swkbd_GetInputFormString();
-    if(inputFormString != NULL)
-    {
-        size_t len = strlen(inputFormString);
-        if(len != 0 && check != CHECK_NONE && check != CHECK_NUMERICAL)
-        {
-            checkingFunction cf;
-            switch(check)
-            {
-                case CHECK_HEXADECIMAL:
-                    cf = &isHexa;
-                    break;
-                case CHECK_ALPHANUMERICAL:
-                    cf = &isAllowedInFilename;
-                    break;
-                case CHECK_URL:
-                    cf = &isUrl;
-                    break;
-                default:
-                    // DEAD CODE
-                    debugPrintf("0xDEADC0DE: %d", check);
-                    return;
-            }
-
-            for(len = 0; inputFormString[len] != '\0'; ++len)
-                if(!cf(inputFormString[len]))
-                {
-                    inputFormString[len] = '\0';
-                    Swkbd_SetInputFormString(inputFormString);
-                    break;
-                }
-        }
-
-        args->okButtonEnabled = args->globalLimit ? len == args->globalMaxlength : len <= args->globalMaxlength;
-    }
-    else
-        args->okButtonEnabled = false;
-
-    Swkbd_SetEnableOkButton(args->okButtonEnabled);
-
-    Swkbd_Calc(&controllerInfo);
-
-    if(Swkbd_IsNeedCalcSubThreadFont())
-    {
-        OSMessage msg = { .message = NUSSPLI_MESSAGE_NONE };
-        OSSendMessage(&swkbd_queue, &msg, OS_MESSAGE_FLAGS_NONE);
-    }
-
-    drawKeyboard(lastUsedController != CT_VPAD_0);
-}
-
-static bool SWKBD_Show(SWKBD_Args *args, KeyboardLayout layout, KeyboardType type, int maxlength, bool limit, const char *okStr)
-{
-    debugPrintf("SWKBD_Show()");
-    if(!Swkbd_IsHidden())
-    {
-        debugPrintf("...while visible!!!");
-        return false;
-    }
-
-    args->calcThread = startThread("NUSspli SWKBD font calculator", THREAD_PRIORITY_MEDIUM, STACKSIZE_SMALL, calcThreadMain, 0, NULL, AFFINITY_CPU12);
-    if(args->calcThread == NULL)
-    {
-        debugPrintf("SWKBD: Can't spawn calc thread!");
-        return false;
-    }
-
-    if(okStr)
-    {
-        size_t strLen = strlen(okStr);
-        appearArg.keyboardArg.configArg.str = MEMAllocFromDefaultHeap(sizeof(char16_t) * ++strLen);
-        if(appearArg.keyboardArg.configArg.str)
-            for(size_t i = 0; i < strLen; ++i)
-                appearArg.keyboardArg.configArg.str[i] = okStr[i];
-    }
-    else
-        appearArg.keyboardArg.configArg.str = NULL;
-
-    // Show the keyboard
-    appearArg.keyboardArg.configArg.languageType = getKeyboardLanguage();
-    switch(appearArg.keyboardArg.configArg.languageType)
-    {
-        case Swkbd_LanguageType__Japanese:
-            appearArg.keyboardArg.configArg.languageType2 = Swkbd_LanguageType2__Japanese;
-            break;
-        case Swkbd_LanguageType__French:
-            appearArg.keyboardArg.configArg.languageType2 = Swkbd_LanguageType2__French;
-            break;
-        case Swkbd_LanguageType__German:
-            appearArg.keyboardArg.configArg.languageType2 = Swkbd_LanguageType2__German;
-            break;
-        case Swkbd_LanguageType__Italian:
-            appearArg.keyboardArg.configArg.languageType2 = Swkbd_LanguageType2__Italian;
-            break;
-        case Swkbd_LanguageType__Spanish:
-            appearArg.keyboardArg.configArg.languageType2 = Swkbd_LanguageType2__Spanish;
-            break;
-        case Swkbd_LanguageType__Dutch:
-            appearArg.keyboardArg.configArg.languageType2 = Swkbd_LanguageType2__Dutch;
-            break;
-        case Swkbd_LanguageType__Portuguese:
-            appearArg.keyboardArg.configArg.languageType2 = Swkbd_LanguageType2__Portuguese;
-            break;
-        case Swkbd_LanguageType__Russian:
-            appearArg.keyboardArg.configArg.languageType2 = Swkbd_LanguageType2__Russian;
-            break;
-        default:
-            appearArg.keyboardArg.configArg.languageType2 = Swkbd_LanguageType2__English;
-    }
-
-    appearArg.keyboardArg.configArg.controllerType = lastUsedController;
-    appearArg.keyboardArg.configArg.keyboardMode = layout;
-
-    appearArg.inputFormArg.type = type;
-    args->globalMaxlength = appearArg.inputFormArg.maxTextLength = maxlength;
-
-    bool kbdVisible = Swkbd_AppearInputForm(&appearArg);
-    debugPrintf("Swkbd_AppearInputForm(): %s", kbdVisible ? "true" : "false");
-
-    if(!kbdVisible)
-        return false;
-
-    args->globalLimit = limit;
-    VPADSetSensorBar(VPAD_CHAN_0, true);
-
-    debugPrintf("nn::swkbd::AppearInputForm success");
-    return true;
-}
-
-static void SWKBD_Hide(SWKBD_Args *args)
-{
-    debugPrintf("SWKBD_Hide()");
-    if(Swkbd_IsHidden())
-    {
-        debugPrintf("...while invisible!!!");
-        return;
-    }
-
-    VPADSetSensorBar(VPAD_CHAN_0, false);
-    Swkbd_DisappearInputForm();
-
-    // DisappearInputForm() wants to render a fade out animation
-    while(!Swkbd_IsHidden())
-        SWKBD_Render(args, CHECK_NONE);
-
-    OSMessage msg = { .message = NUSSPLI_MESSAGE_EXIT };
-    OSSendMessage(&swkbd_queue, &msg, OS_MESSAGE_FLAGS_BLOCKING);
-    stopThread(args->calcThread, NULL);
-
-    if(appearArg.keyboardArg.configArg.str)
-        MEMFreeToDefaultHeap(appearArg.keyboardArg.configArg.str);
-}
 
 bool SWKBD_Init()
 {
-    debugPrintf("SWKBD_Init()");
-
-    createArg.fsClient = &swkbdFsclient;
-    if(FSAddClient(createArg.fsClient, 0) != FS_STATUS_OK)
-        return false;
-
-    createArg.workMemory = MEMAllocFromDefaultHeap(Swkbd_GetWorkMemorySize(0));
-    if(createArg.workMemory == NULL)
-    {
-        FSDelClient(createArg.fsClient, 0);
-        return false;
-    }
-
-    OSBlockSet(swkbd_msg, 0, sizeof(OSMessage) * SWKBD_QUEUE_SIZE);
-    OSInitMessageQueueEx(&swkbd_queue, swkbd_msg, SWKBD_QUEUE_SIZE, "NUSspli SWKBD calc queue");
-
-    switch(getKeyboardLanguage())
-    {
-        case Swkbd_LanguageType__Japanese:
-            createArg.regionType = Swkbd_RegionType__Japan;
-            break;
-        case Swkbd_LanguageType__English:
-            createArg.regionType = Swkbd_RegionType__USA;
-            break;
-        case Swkbd_LanguageType__Chinese1:
-            createArg.regionType = Swkbd_RegionType__China;
-            break;
-        case Swkbd_LanguageType__Korean:
-            createArg.regionType = Swkbd_RegionType__Korea;
-            break;
-        case Swkbd_LanguageType__Chinese2:
-            createArg.regionType = Swkbd_RegionType__Taiwan;
-            break;
-        default:
-            createArg.regionType = Swkbd_RegionType__Europe;
-            break;
-    }
-
-    if(Swkbd_Create(&createArg))
-    {
-        OSBlockSet(&appearArg, 0, sizeof(Swkbd_AppearArg));
-        appearArg.keyboardArg.configArg.accessFlags = 0xFFFFFFFF;
-        appearArg.keyboardArg.configArg.unk_0x14 = -1;
-        appearArg.keyboardArg.configArg.framerate = FRAMERATE_60FPS;
-        appearArg.keyboardArg.configArg.showCursor = true;
-        appearArg.keyboardArg.configArg.unk_0xA4 = -1;
-        appearArg.keyboardArg.configArg.disableNewLine = true;
-
-        appearArg.keyboardArg.receiverArg.unk_0x14 = 2;
-
-        appearArg.inputFormArg.unk_0x04 = -1;
-        appearArg.inputFormArg.initialText = NULL;
-        appearArg.inputFormArg.hintText = NULL;
-        appearArg.inputFormArg.pwMode = Swkbd_PW_mode__None;
-        appearArg.inputFormArg.unk_0x18 = 0x00008000; // Monospace seperator after 16 chars (for 32 char keys)
-        appearArg.inputFormArg.drawInput0Cursor = true;
-        appearArg.inputFormArg.higlightInitialText = true;
-        appearArg.inputFormArg.showCopyPasteButtons = true;
-
-        return true;
-    }
-
-    MEMFreeToDefaultHeap(createArg.workMemory);
-    FSDelClient(createArg.fsClient, 0);
-    return false;
+    nn_swkbd_init_arg swkbdArg;
+    nn_swkbd_get_default_init_arg(&swkbdArg);
+    return nn_swkbd_init(&swkbdArg);
 }
 
 void SWKBD_Shutdown()
 {
-    Swkbd_Destroy();
-    MEMFreeToDefaultHeap(createArg.workMemory);
-    FSDelClient(createArg.fsClient, 0);
+    nn_swkbd_finish();
 }
 
 void readInput()
 {
-    VPADReadError vError;
-    VPADRead(VPAD_CHAN_0, &vpad, 1, &vError);
-    bool kbdHidden = Swkbd_IsReady() ? Swkbd_IsHidden() : true;
+    VPADReadError verr;
+    vpad.trigger = 0;
+    vpad.release = 0;
+    uint32_t hold = vpad.hold;
+    VPADRead(VPAD_CHAN_0, &vpad, 1, &verr);
 
-    if(vError != VPAD_READ_SUCCESS)
-        OSBlockSet(&vpad, 0, sizeof(VPADStatus));
-    else if(vpad.trigger)
+    if(verr == VPAD_READ_SUCCESS)
     {
-        vpad.trigger &= ~(VPAD_STICK_R_EMULATION_LEFT | VPAD_STICK_R_EMULATION_RIGHT | VPAD_STICK_R_EMULATION_UP | VPAD_STICK_R_EMULATION_DOWN | VPAD_BUTTON_HOME);
-
-        if(vpad.trigger & VPAD_STICK_L_EMULATION_UP)
-            vpad.trigger |= VPAD_BUTTON_UP;
-        if(vpad.trigger & VPAD_STICK_L_EMULATION_DOWN)
-            vpad.trigger |= VPAD_BUTTON_DOWN;
-        if(vpad.trigger & VPAD_STICK_L_EMULATION_LEFT)
-            vpad.trigger |= VPAD_BUTTON_LEFT;
-        if(vpad.trigger & VPAD_STICK_L_EMULATION_RIGHT)
-            vpad.trigger |= VPAD_BUTTON_RIGHT;
-
-        if(vpad.hold & VPAD_STICK_L_EMULATION_UP)
-            vpad.hold |= VPAD_BUTTON_UP;
-        if(vpad.hold & VPAD_STICK_L_EMULATION_DOWN)
-            vpad.hold |= VPAD_BUTTON_DOWN;
-        if(vpad.hold & VPAD_STICK_L_EMULATION_LEFT)
-            vpad.hold |= VPAD_BUTTON_LEFT;
-        if(vpad.hold & VPAD_STICK_L_EMULATION_RIGHT)
-            vpad.hold |= VPAD_BUTTON_RIGHT;
-
-        if(vpad.trigger && kbdHidden)
-            lastUsedController = CT_VPAD_0;
+        vpad.hold &= (VPAD_BUTTON_A | VPAD_BUTTON_B | VPAD_BUTTON_X | VPAD_BUTTON_Y | VPAD_BUTTON_STICK_R | VPAD_BUTTON_STICK_L | VPAD_BUTTON_LEFT | VPAD_BUTTON_RIGHT | VPAD_BUTTON_UP | VPAD_BUTTON_DOWN | VPAD_BUTTON_PLUS | VPAD_BUTTON_MINUS | VPAD_BUTTON_ZR | VPAD_BUTTON_ZL | VPAD_BUTTON_R | VPAD_BUTTON_L | VPAD_BUTTON_HOME | VPAD_BUTTON_SYNC | VPAD_BUTTON_TV | VPAD_BUTTON_POWER);
+        vpad.trigger = vpad.hold & ~hold;
+        vpad.release = ~vpad.hold & hold;
     }
+    else
+        vpad.hold = 0;
 
-    bool altCon = false;
-    uint32_t controllerType;
-    int32_t controllerProbe;
-    uint32_t oldV, oldH;
-    KPADStatus *kps = ((KPADStatus *)kpad) + 4;
-    KPADError kerr;
-    int i = 4;
-    bool cont;
-    while(i)
+    KPADStatus kpad[4];
+    KPADReadError kerr;
+    uint32_t kh;
+    for(int i = 0; i < 4; ++i)
     {
-        --kps;
-        controllerProbe = WPADProbe(--i, &controllerType);
-        if(controllerProbe == 0)
+        KPADReadEx((KPADChan)i, &kpad[i], 1, &kerr);
+        if(kerr == KPAD_READ_SUCCESS)
         {
-            altCon = true;
-            KPADReadEx(i, kps, 1, &kerr);
-            if(kerr != KPAD_ERROR_OK)
-                goto kpadReadError;
+            kh = kpad[i].hold;
+            if(kpad[i].extensionType == WPAD_EXT_CORE || kpad[i].extensionType == WPAD_EXT_NUNCHUK)
+                kh |= kpad[i].classic.hold; // classic.hold and wii.hold are in the same union
+
+            vpad.hold |= kh;
+            vpad.trigger |= kpad[i].trigger;
+            if(kpad[i].extensionType == WPAD_EXT_CORE || kpad[i].extensionType == WPAD_EXT_NUNCHUK)
+                vpad.trigger |= kpad[i].classic.trigger;
+
+            vpad.release |= kpad[i].release;
+            if(kpad[i].extensionType == WPAD_EXT_CORE || kpad[i].extensionType == WPAD_EXT_NUNCHUK)
+                vpad.release |= kpad[i].classic.release;
         }
-        else
-            goto kpadReadError;
-
-        oldV = vpad.trigger;
-        oldH = vpad.hold;
-        cont = false;
-
-        if(controllerType == WPAD_EXT_PRO_CONTROLLER || // With a simple input like ours we're able to handle Wii u pro as Wii classic controllers.
-            controllerType == WPAD_EXT_CLASSIC || controllerType == WPAD_EXT_MPLUS_CLASSIC)
-        {
-            if(kps->classic.trigger)
-            {
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_A)
-                    vpad.trigger |= VPAD_BUTTON_A;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_B)
-                    vpad.trigger |= VPAD_BUTTON_B;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_X)
-                    vpad.trigger |= VPAD_BUTTON_X;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_Y)
-                    vpad.trigger |= VPAD_BUTTON_Y;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_UP)
-                    vpad.trigger |= VPAD_BUTTON_UP;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_DOWN)
-                    vpad.trigger |= VPAD_BUTTON_DOWN;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_LEFT)
-                    vpad.trigger |= VPAD_BUTTON_LEFT;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_RIGHT)
-                    vpad.trigger |= VPAD_BUTTON_RIGHT;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_PLUS)
-                    vpad.trigger |= VPAD_BUTTON_PLUS;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_MINUS)
-                    vpad.trigger |= VPAD_BUTTON_MINUS;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_R)
-                    vpad.trigger |= VPAD_BUTTON_R;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_L)
-                    vpad.trigger |= VPAD_BUTTON_L;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_ZR)
-                    vpad.trigger |= VPAD_BUTTON_ZR;
-                if(kps->classic.trigger & WPAD_CLASSIC_BUTTON_ZL)
-                    vpad.trigger |= VPAD_BUTTON_ZL;
-
-                if(kbdHidden && vpad.trigger != oldV)
-                    lastUsedController = i;
-
-                cont = true;
-            }
-
-            if(kps->classic.hold)
-            {
-                if(kps->classic.hold & WPAD_CLASSIC_BUTTON_UP)
-                    vpad.hold |= VPAD_BUTTON_UP;
-                if(kps->classic.hold & WPAD_CLASSIC_BUTTON_DOWN)
-                    vpad.hold |= VPAD_BUTTON_DOWN;
-                if(kps->classic.hold & WPAD_CLASSIC_BUTTON_LEFT)
-                    vpad.hold |= VPAD_BUTTON_LEFT;
-                if(kps->classic.hold & WPAD_CLASSIC_BUTTON_RIGHT)
-                    vpad.hold |= VPAD_BUTTON_RIGHT;
-
-                if(kbdHidden && vpad.hold != oldH)
-                    lastUsedController = i;
-
-                cont = true;
-            }
-
-            if(cont)
-                continue;
-        }
-
-        if(kps->trigger)
-        {
-            if(kps->trigger & WPAD_BUTTON_A)
-                vpad.trigger |= VPAD_BUTTON_A;
-            if(kps->trigger & WPAD_BUTTON_B)
-                vpad.trigger |= VPAD_BUTTON_B;
-            if(kps->trigger & WPAD_BUTTON_1)
-                vpad.trigger |= VPAD_BUTTON_X;
-            if(kps->trigger & WPAD_BUTTON_2)
-                vpad.trigger |= VPAD_BUTTON_Y;
-            if(kps->trigger & WPAD_BUTTON_UP)
-                vpad.trigger |= VPAD_BUTTON_UP;
-            if(kps->trigger & WPAD_BUTTON_DOWN)
-                vpad.trigger |= VPAD_BUTTON_DOWN;
-            if(kps->trigger & WPAD_BUTTON_LEFT)
-                vpad.trigger |= VPAD_BUTTON_LEFT;
-            if(kps->trigger & WPAD_BUTTON_RIGHT)
-                vpad.trigger |= VPAD_BUTTON_RIGHT;
-            if(kps->trigger & WPAD_BUTTON_PLUS)
-                vpad.trigger |= VPAD_BUTTON_PLUS;
-            if(kps->trigger & WPAD_BUTTON_MINUS)
-                vpad.trigger |= VPAD_BUTTON_MINUS;
-            if(kps->trigger & WPAD_BUTTON_Z)
-                vpad.trigger |= VPAD_BUTTON_ZR;
-            if(kps->trigger & WPAD_BUTTON_C)
-                vpad.trigger |= VPAD_BUTTON_ZL;
-
-            if(kbdHidden && vpad.trigger != oldV)
-                lastUsedController = i;
-        }
-
-        if(kps->hold)
-        {
-            if(kps->hold & WPAD_BUTTON_UP)
-                vpad.hold |= VPAD_BUTTON_UP;
-            if(kps->hold & WPAD_BUTTON_DOWN)
-                vpad.hold |= VPAD_BUTTON_DOWN;
-            if(kps->hold & WPAD_BUTTON_LEFT)
-                vpad.hold |= VPAD_BUTTON_LEFT;
-            if(kps->hold & WPAD_BUTTON_RIGHT)
-                vpad.hold |= VPAD_BUTTON_RIGHT;
-
-            if(kbdHidden && vpad.hold != oldH)
-                lastUsedController = i;
-        }
-
-        continue;
-
-    kpadReadError:
-        if(controllerProbe != -1)
-            altCon = true;
-
-        OSBlockSet(kps, 0, sizeof(KPADStatus));
     }
-
-    if(vpad.trigger != 0)
-    {
-        OSTime t = OSGetSystemTime() - lastButtonPress;
-        addEntropy(&t, sizeof(OSTime));
-        lastButtonPress = t;
-    }
-
-    if(!altCon && vError == VPAD_READ_INVALID_CONTROLLER)
-    {
-        if(io == NULL)
-            io = addErrorOverlay("No Controller connected!");
-    }
-    else if(io != NULL)
-    {
-        removeErrorOverlay(io);
-        io = NULL;
-    };
 }
 
-bool showKeyboard(KeyboardLayout layout, KeyboardType type, char *output, KeyboardChecks check, int maxlength, bool limit, const char *input, const char *okStr)
+typedef struct
 {
-    debugPrintf("Initialising SWKBD");
+    KeyboardLayout layout;
+    KeyboardType type;
+    KeyboardChecks check;
+    int maxlength;
+    bool limit;
+    char *input;
+    char *okStr;
+    KeyboardCallback callback;
+    void *userdata;
+    bool visible;
+} KeyboardData;
 
-    if(maxlength < 1)
-        return false;
+static void keyboardUpdate(Screen *self)
+{
+    KeyboardData *data = (KeyboardData *)self->data;
 
-    SWKBD_Args args;
-
-    if(!SWKBD_Show(&args, layout, type, maxlength, limit, okStr))
+    if(!data->visible)
     {
-        drawErrorFrame("Error showing SWKBD:\nnn::swkbd::AppearInputForm failed", ANY_RETURN);
+        nn_swkbd_appear_arg appearArg;
+        nn_swkbd_get_default_appear_arg(&appearArg);
 
-        while(AppRunning(true))
+        appearArg.keyboard_arg.config_arg.keyboard_layout = (nn_swkbd_keyboard_layout)data->layout;
+        appearArg.keyboard_arg.config_arg.language_type = (nn_swkbd_language_type)getLanguage();
+        appearArg.input_form_arg.max_text_length = data->maxlength;
+        appearArg.input_form_arg.is_limit_digit = data->limit;
+
+        if(data->okStr)
+            appearArg.keyboard_arg.config_arg.ok_string = (char16_t *)data->okStr;
+
+        if(data->input)
+            nn_swkbd_set_input_text_utf8(&appearArg, data->input);
+
+        switch(data->type)
         {
-            showFrame();
-            if(vpad.trigger)
+            case KEYBOARD_TYPE_RESTRICTED:
+                appearArg.keyboard_arg.config_arg.is_fep = false;
+                appearArg.keyboard_arg.config_arg.is_utf8 = true;
+                break;
+            case KEYBOARD_TYPE_NORMAL:
+                appearArg.keyboard_arg.config_arg.is_fep = true;
+                appearArg.keyboard_arg.config_arg.is_utf8 = true;
                 break;
         }
 
-        return false;
+        nn_swkbd_appear(&appearArg);
+        data->visible = true;
     }
-    debugPrintf("SWKBD initialised successfully");
 
-    if(input != NULL)
-        Swkbd_SetInputFormString(input);
+    nn_swkbd_main_loop_arg mainLoopArg;
+    nn_swkbd_get_default_main_loop_arg(&mainLoopArg);
+    nn_swkbd_calc(&mainLoopArg);
 
-    bool close = false;
-    OSTime t = OSGetSystemTime();
-    while(AppRunning(true))
+    if(nn_swkbd_is_decide())
     {
-        VPADGetTPCalibratedPoint(VPAD_CHAN_0, &vpad.tpFiltered1, &vpad.tpNormal);
-        vpad.tpFiltered2 = vpad.tpNormal = vpad.tpFiltered1;
-        SWKBD_Render(&args, check);
-        //		sleepTillFrameEnd();
+        const char *text = nn_swkbd_get_input_text_utf8();
+        char *textCopy = MEMAllocFromDefaultHeap(strlen(text) + 1);
+        if(textCopy) strcpy(textCopy, text);
 
-        if(args.okButtonEnabled && (Swkbd_IsDecideOkButton(&close) || vpad.trigger & VPAD_BUTTON_PLUS))
+        bool ok = true;
+        if(data->check != CHECK_NONE && textCopy)
         {
-            debugPrintf("SWKBD Ok button pressed");
-            strcpy(output, Swkbd_GetInputFormString());
-            close = true;
-            break;
+            size_t len = strlen(textCopy);
+            for(size_t i = 0; i < len; ++i)
+            {
+                switch(data->check)
+                {
+                    case CHECK_NUMERICAL:
+                        if(textCopy[i] < '0' || textCopy[i] > '9') ok = false;
+                        break;
+                    case CHECK_HEXADECIMAL:
+                        if(!((textCopy[i] >= '0' && textCopy[i] <= '9') || (textCopy[i] >= 'a' && textCopy[i] <= 'f') || (textCopy[i] >= 'A' && textCopy[i] <= 'F'))) ok = false;
+                        break;
+                    case CHECK_ALPHANUMERICAL:
+                        if(!((textCopy[i] >= '0' && textCopy[i] <= '9') || (textCopy[i] >= 'a' && textCopy[i] <= 'z') || (textCopy[i] >= 'A' && textCopy[i] <= 'Z'))) ok = false;
+                        break;
+                    case CHECK_URL:
+                        if(!((textCopy[i] >= '0' && textCopy[i] <= '9') || (textCopy[i] >= 'a' && textCopy[i] <= 'z') || (textCopy[i] >= 'A' && textCopy[i] <= 'Z') || textCopy[i] == '.' || textCopy[i] == ':' || textCopy[i] == '/' || textCopy[i] == '-' || textCopy[i] == '_' || textCopy[i] == '?' || textCopy[i] == '&' || textCopy[i] == '=' || textCopy[i] == '%' || textCopy[i] == '+' || textCopy[i] == '#')) ok = false;
+                        break;
+                    default: break;
+                }
+                if(!ok) break;
+            }
         }
 
-        close = vpad.trigger & VPAD_BUTTON_B || vpad.trigger & VPAD_BUTTON_MINUS;
-        if(close)
-        {
-            char *inputFormString = Swkbd_GetInputFormString();
-            if(inputFormString != NULL)
-                close = strlen(inputFormString) == 0;
-        }
+        KeyboardCallback cb = data->callback;
+        void *ud = data->userdata;
 
-        if(close || Swkbd_IsDecideCancelButton(&close))
-        {
-            debugPrintf("SWKBD Cancel button pressed");
-            close = false;
-            break;
-        }
+        nn_swkbd_disappear();
+        screenPop();
 
-        close = false;
+        if(cb) cb(ok, ok ? textCopy : NULL, ud);
+        if(textCopy) MEMFreeToDefaultHeap(textCopy);
     }
+    else if(nn_swkbd_is_cancel())
+    {
+        KeyboardCallback cb = data->callback;
+        void *ud = data->userdata;
+        nn_swkbd_disappear();
+        screenPop();
+        if(cb) cb(false, NULL, ud);
+    }
+}
 
-    SWKBD_Hide(&args);
-    t = OSGetSystemTime() - t;
-    addEntropy(&t, sizeof(OSTime));
-    return close;
+static void keyboardDraw(Screen *self)
+{
+    nn_swkbd_draw_vpad_arg drawVpadArg;
+    nn_swkbd_get_default_draw_vpad_arg(&drawVpadArg);
+    nn_swkbd_draw_vpad(&drawVpadArg);
+
+    nn_swkbd_draw_drc_arg drawDrcArg;
+    nn_swkbd_get_default_draw_drc_arg(&drawDrcArg);
+    nn_swkbd_draw_drc(&drawDrcArg);
+
+    (void)self;
+}
+
+static void keyboardExit(Screen *self)
+{
+    KeyboardData *data = (KeyboardData *)self->data;
+    if(data)
+    {
+        if(data->input) MEMFreeToDefaultHeap(data->input);
+        if(data->okStr) MEMFreeToDefaultHeap(data->okStr);
+        MEMFreeToDefaultHeap(data);
+    }
+    MEMFreeToDefaultHeap(self);
+}
+
+void showKeyboard(KeyboardLayout layout, KeyboardType type, KeyboardChecks check, int maxlength, bool limit, const char *input, const char *okStr, KeyboardCallback callback, void *userdata)
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL) return;
+
+    KeyboardData *data = MEMAllocFromDefaultHeap(sizeof(KeyboardData));
+    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+
+    data->layout = layout; data->type = type; data->check = check; data->maxlength = maxlength; data->limit = limit;
+    if(input) { data->input = MEMAllocFromDefaultHeap(strlen(input) + 1); if(data->input) strcpy(data->input, input); } else data->input = NULL;
+    if(okStr) { data->okStr = MEMAllocFromDefaultHeap(strlen(okStr) + 1); if(data->okStr) strcpy(data->okStr, okStr); } else data->okStr = NULL;
+    data->callback = callback; data->userdata = userdata;
+    data->visible = false;
+
+    self->onUpdate = keyboardUpdate;
+    self->onDraw = keyboardDraw;
+    self->onExit = keyboardExit;
+    self->data = data;
+    self->dirty = true;
+
+    screenPush(self);
 }

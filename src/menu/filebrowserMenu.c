@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -34,7 +34,9 @@
 #include <menu/utils.h>
 #include <queue.h>
 #include <renderer.h>
+#include <screen.h>
 #include <state.h>
+#include <utils.h>
 
 #pragma GCC diagnostic ignored "-Wundef"
 #include <coreinit/filesystem_fsa.h>
@@ -45,7 +47,22 @@
 #define MAX_FILEBROWSER_LINES (MAX_LINES - 5)
 
 static NUSDEV activeDevice = NUSDEV_NONE;
-// static char presavedPath[FS_MAX_PATH]; // TODO
+
+typedef struct
+{
+    char *path;
+    LIST *folders;
+    size_t cursor;
+    size_t pos;
+    bool mov;
+    bool installMenu;
+    bool allowNoIntro;
+    FileBrowserCallback callback;
+    void *userdata;
+    uint32_t oldHold;
+    size_t frameCount;
+    NUSDEV usbMounted;
+} FileBrowserData;
 
 static void drawFBMenuFrame(const char *path, LIST *folders, size_t pos, const size_t cursor, bool usbMounted, bool installMenu, bool showQueue)
 {
@@ -60,12 +77,12 @@ static void drawFBMenuFrame(const char *path, LIST *folders, size_t pos, const s
     strcat(toWrite, localise(BUTTON_B " to return"));
     strcat(toWrite, " || ");
 
-    char *l = getStaticLineBuffer();
-    strcpy(l, BUTTON_X " to switch to ");
-    strcat(l, activeDevice == NUSDEV_USB ? "SD" : activeDevice == NUSDEV_SD ? "NAND"
+    char l_str[128];
+    strcpy(l_str, BUTTON_X " to switch to ");
+    strcat(l_str, activeDevice == NUSDEV_USB ? "SD" : activeDevice == NUSDEV_SD ? "NAND"
             : usbMounted                                                    ? "USB"
                                                                             : "SD");
-    strcat(toWrite, localise(l));
+    strcat(toWrite, localise(l_str));
     textToFrame(MAX_LINES - 2, ALIGNED_CENTER, toWrite);
 
     if(showQueue)
@@ -86,9 +103,9 @@ static void drawFBMenuFrame(const char *path, LIST *folders, size_t pos, const s
     char fp[FS_MAX_PATH];
     size_t i = strlen(path);
     OSBlockMove(fp, path, i, false);
-    l = fp + i;
+    char *l_ptr = fp + i;
     i = 0;
-    showQueue = false;
+    bool sQ = false;
 
     forEachListEntry(folders, folder)
     {
@@ -103,19 +120,19 @@ static void drawFBMenuFrame(const char *path, LIST *folders, size_t pos, const s
 
         if(installMenu)
         {
-            showQueue = false;
-            strcpy(l, folder);
+            sQ = false;
+            strcpy(l_ptr, folder);
             forEachListEntry(getTitleQueue(), title)
             {
                 if(strcmp(fp, title->folderName) == 0)
                 {
-                    showQueue = true;
+                    sQ = true;
                     break;
                 }
             }
         }
 
-        if(showQueue)
+        if(sQ)
             textToFrameColored(i + 2, 5, folder, SCREEN_COLOR_YELLOW);
         else
             textToFrame(i + 2, 5, folder);
@@ -127,301 +144,213 @@ static void drawFBMenuFrame(const char *path, LIST *folders, size_t pos, const s
     drawFrame();
 }
 
-char *fileBrowserMenu(bool installMenu, bool allowNoIntro)
+static void refreshDirList(FileBrowserData *data)
 {
-    char *path = MEMAllocFromDefaultHeap(FS_MAX_PATH);
-    if(path != NULL)
+    clearList(data->folders, true);
+    char *name = MEMAllocFromDefaultHeap(sizeof("../"));
+    if(name == NULL) return;
+
+    OSBlockMove(name, "../", sizeof("../"), false);
+    addToListEnd(data->folders, name);
+
+    data->cursor = data->pos = 0;
+
+    FSADirectoryHandle dir;
+    if(FSAOpenDir(getFSAClient(), data->path, &dir) == FS_ERROR_OK)
     {
-        LIST *folders = createList();
-        if(folders != NULL)
-        {
-            size_t cursor, pos;
-            bool mov;
-            FSADirectoryHandle dir;
-            bool sQ;
-            NUSDEV usbMounted = getUSB();
-            if(activeDevice == NUSDEV_NONE)
-                activeDevice = usbMounted ? NUSDEV_USB : NUSDEV_SD;
-
-        refreshVOlList:
-            strcpy(path, (activeDevice & NUSDEV_USB) ? (usbMounted == NUSDEV_USB01 ? INSTALL_DIR_USB1 : INSTALL_DIR_USB2) : (activeDevice == NUSDEV_SD ? INSTALL_DIR_SD : INSTALL_DIR_MLC));
-            if(activeDevice == NUSDEV_SD)
-                checkSpaceThread(); // To show the waiting for SD overlay
-
-        refreshDirList:
-            OSTime t = OSGetTime();
-            clearList(folders, true);
-            char *name = MEMAllocFromDefaultHeap(sizeof("../"));
-            if(name == NULL)
-                goto exitFailure;
-
-            OSBlockMove(name, "../", sizeof("../"), false);
-            if(!addToListEnd(folders, name))
+        FSADirectoryEntry entry;
+        while(FSAReadDir(getFSAClient(), dir, &entry) == FS_ERROR_OK)
+            if(entry.info.flags & FS_STAT_DIRECTORY)
             {
-                MEMFreeToDefaultHeap(name);
-                goto exitFailure;
+                size_t len = strlen(entry.name);
+                name = MEMAllocFromDefaultHeap(len + 2);
+                if(name)
+                {
+                    OSBlockMove(name, entry.name, len, false);
+                    name[len] = '/';
+                    name[len+1] = '\0';
+                    addToListEnd(data->folders, name);
+                }
             }
+        FSACloseDir(getFSAClient(), dir);
+    }
+    data->mov = getListSize(data->folders) >= MAX_FILEBROWSER_LINES;
+}
 
-            cursor = pos = 0;
+static void fileBrowserUpdate(Screen *self)
+{
+    FileBrowserData *data = (FileBrowserData *)self->data;
+    bool sQ = data->installMenu ? getListSize(getTitleQueue()) : false;
+    bool dpadAction;
 
-            if(FSAOpenDir(getFSAClient(), path, &dir) == FS_ERROR_OK)
-            {
-                size_t len;
-                FSADirectoryEntry entry;
-                while(FSAReadDir(getFSAClient(), dir, &entry) == FS_ERROR_OK)
-                    if(entry.info.flags & FS_STAT_DIRECTORY) // Check if it's a directory
-                    {
-                        len = strlen(entry.name);
-                        name = MEMAllocFromDefaultHeap(len + 2);
-                        if(name == NULL)
-                        {
-                            FSACloseDir(getFSAClient(), dir);
-                            goto exitFailure;
-                        }
-
-                        OSBlockMove(name, entry.name, len, false);
-                        name[len] = '/';
-                        name[++len] = '\0';
-                        if(!addToListEnd(folders, name))
-                        {
-                            MEMFreeToDefaultHeap(name);
-                            FSACloseDir(getFSAClient(), dir);
-                            goto exitFailure;
-                        }
-                    }
-
-                FSACloseDir(getFSAClient(), dir);
-            }
-
-            t = OSGetTime() - t;
-            addEntropy(&t, sizeof(OSTime));
-
-            mov = getListSize(folders) >= MAX_FILEBROWSER_LINES;
-            bool redraw = true;
-            uint32_t oldHold = 0;
-            size_t frameCount = 0;
-            bool dpadAction;
-            while(AppRunning(true))
-            {
-                if(app == APP_STATE_BACKGROUND)
-                    continue;
-                if(app == APP_STATE_RETURNING)
-                    redraw = true;
-
-                if(redraw)
-                {
-                    sQ = installMenu ? getListSize(getTitleQueue()) : false;
-                    drawFBMenuFrame(path, folders, pos, cursor, usbMounted, installMenu, sQ);
-                    redraw = false;
-                }
-                showFrame();
-
-                if(vpad.trigger & VPAD_BUTTON_B)
-                    break;
-                if(vpad.trigger & VPAD_BUTTON_A)
-                {
-                    if(cursor + pos == 0)
-                    {
-                        char *last = strstr(path + (sizeof("/vol/") - 1), "/");
-                        char *cur = strstr(last + 1, "/");
-                        if(cur != NULL)
-                        {
-                            char *next = strstr(cur + 1, "/");
-                            while(next != NULL)
-                            {
-                                last = cur;
-                                cur = next;
-                                next = strstr(cur + 1, "/");
-                            }
-
-                            *++last = '\0';
-                            goto refreshDirList;
-                        }
-                    }
-                    else
-                    {
-                        strcat(path, getContent(folders, cursor + pos));
-                        pos = strlen(path);
-                        strcpy(path + pos, "title.tmd");
-                        redraw = fileExists(path);
-                        path[pos] = '\0';
-                        if(redraw)
-                        {
-                            destroyList(folders, true);
-                            return path;
-                        }
-                        else if(allowNoIntro)
-                        {
-                            // No intro
-                            strcpy(path + pos, "tmd");
-                            redraw = fileExists(path);
-                            path[pos] = '\0';
-                            if(redraw)
-                            {
-                                destroyList(folders, true);
-                                return path;
-                            }
-                        }
-
-                        goto refreshDirList;
-                    }
-                }
-
-                if(vpad.hold & VPAD_BUTTON_UP)
-                {
-                    if(oldHold != VPAD_BUTTON_UP)
-                    {
-                        oldHold = VPAD_BUTTON_UP;
-                        frameCount = 30;
-                        dpadAction = true;
-                    }
-                    else if(frameCount == 0)
-                        dpadAction = true;
-                    else
-                    {
-                        --frameCount;
-                        dpadAction = false;
-                    }
-
-                    if(dpadAction)
-                    {
-                        if(cursor)
-                            cursor--;
-                        else
-                        {
-                            if(mov)
-                            {
-                                if(pos)
-                                    pos--;
-                                else
-                                {
-                                    cursor = MAX_FILEBROWSER_LINES - 1;
-                                    pos = getListSize(folders) - MAX_FILEBROWSER_LINES;
-                                }
-                            }
-                            else
-                                cursor = getListSize(folders) - 1;
-                        }
-
-                        redraw = true;
-                    }
-                }
-                else if(vpad.hold & VPAD_BUTTON_DOWN)
-                {
-                    if(oldHold != VPAD_BUTTON_DOWN)
-                    {
-                        oldHold = VPAD_BUTTON_DOWN;
-                        frameCount = 30;
-                        dpadAction = true;
-                    }
-                    else if(frameCount == 0)
-                        dpadAction = true;
-                    else
-                    {
-                        --frameCount;
-                        dpadAction = false;
-                    }
-
-                    if(dpadAction)
-                    {
-                        if(cursor + pos >= getListSize(folders) - 1 || cursor >= MAX_FILEBROWSER_LINES - 1)
-                        {
-                            if(!mov || ++pos + cursor >= getListSize(folders))
-                                cursor = pos = 0;
-                        }
-                        else
-                            ++cursor;
-
-                        redraw = true;
-                    }
-                }
-                else if(mov)
-                {
-                    if(vpad.hold & VPAD_BUTTON_RIGHT)
-                    {
-                        if(oldHold != VPAD_BUTTON_RIGHT)
-                        {
-                            oldHold = VPAD_BUTTON_RIGHT;
-                            frameCount = 30;
-                            dpadAction = true;
-                        }
-                        else if(frameCount == 0)
-                            dpadAction = true;
-                        else
-                        {
-                            --frameCount;
-                            dpadAction = false;
-                        }
-
-                        if(dpadAction)
-                        {
-                            pos += MAX_FILEBROWSER_LINES;
-                            if(pos >= getListSize(folders))
-                                pos = 0;
-                            cursor = 0;
-                            redraw = true;
-                        }
-                    }
-                    else if(vpad.hold & VPAD_BUTTON_LEFT)
-                    {
-                        if(oldHold != VPAD_BUTTON_LEFT)
-                        {
-                            oldHold = VPAD_BUTTON_LEFT;
-                            frameCount = 30;
-                            dpadAction = true;
-                        }
-                        else if(frameCount == 0)
-                            dpadAction = true;
-                        else
-                        {
-                            --frameCount;
-                            dpadAction = false;
-                        }
-
-                        if(dpadAction)
-                        {
-                            if(pos >= MAX_FILEBROWSER_LINES)
-                                pos -= MAX_FILEBROWSER_LINES;
-                            else
-                                pos = getListSize(folders) - MAX_FILEBROWSER_LINES;
-                            cursor = 0;
-                            redraw = true;
-                        }
-                    }
-                }
-
-                if(vpad.trigger & VPAD_BUTTON_MINUS && sQ)
-                {
-                    if(queueMenu())
-                        break;
-
-                    redraw = true;
-                }
-                if(vpad.trigger & VPAD_BUTTON_X)
-                {
-                    switch((int)activeDevice)
-                    {
-                        case NUSDEV_USB:
-                            activeDevice = NUSDEV_SD;
-                            break;
-                        case NUSDEV_SD:
-                            activeDevice = NUSDEV_MLC;
-                            break;
-                        case NUSDEV_MLC:
-                            activeDevice = usbMounted ? NUSDEV_USB : NUSDEV_SD;
-                    }
-                    goto refreshVOlList;
-                }
-
-                if(oldHold && !(vpad.hold & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN | VPAD_BUTTON_LEFT | VPAD_BUTTON_RIGHT)))
-                    oldHold = 0;
-            }
-        exitFailure:
-            destroyList(folders, true);
-        }
-
-        MEMFreeToDefaultHeap(path);
+    if(vpad.trigger & VPAD_BUTTON_B)
+    {
+        FileBrowserCallback cb = data->callback;
+        void *ud = data->userdata;
+        screenPop();
+        if(cb) cb(NULL, ud);
+        return;
     }
 
-    return NULL;
+    if(vpad.trigger & VPAD_BUTTON_A)
+    {
+        if(data->cursor + data->pos == 0)
+        {
+            char *last = strstr(data->path + (sizeof("/vol/") - 1), "/");
+            char *cur = strstr(last + 1, "/");
+            if(cur != NULL)
+            {
+                char *next = strstr(cur + 1, "/");
+                while(next != NULL)
+                {
+                    last = cur;
+                    cur = next;
+                    next = strstr(cur + 1, "/");
+                }
+                *++last = '\0';
+                refreshDirList(data);
+                self->dirty = true;
+            }
+        }
+        else
+        {
+            char *sel = getContent(data->folders, data->cursor + data->pos);
+            strcat(data->path, sel);
+            size_t p = strlen(data->path);
+            strcpy(data->path + p, "title.tmd");
+            bool exists = fileExists(data->path);
+            data->path[p] = '\0';
+            if(exists)
+            {
+                FileBrowserCallback cb = data->callback;
+                void *ud = data->userdata;
+                char *path = data->path;
+                data->path = NULL; // Prevent freeing in onExit
+                screenPop();
+                if(cb) cb(path, ud);
+                MEMFreeToDefaultHeap(path);
+                return;
+            }
+            else if(data->allowNoIntro)
+            {
+                strcpy(data->path + p, "tmd");
+                exists = fileExists(data->path);
+                data->path[p] = '\0';
+                if(exists)
+                {
+                    FileBrowserCallback cb = data->callback;
+                    void *ud = data->userdata;
+                    char *path = data->path;
+                    data->path = NULL;
+                    screenPop();
+                    if(cb) cb(path, ud);
+                    MEMFreeToDefaultHeap(path);
+                    return;
+                }
+            }
+            refreshDirList(data);
+            self->dirty = true;
+        }
+        return;
+    }
+
+    if(vpad.hold & VPAD_BUTTON_UP)
+    {
+        if(data->oldHold != VPAD_BUTTON_UP) { data->oldHold = VPAD_BUTTON_UP; data->frameCount = 30; dpadAction = true; }
+        else if(data->frameCount == 0) dpadAction = true;
+        else { --data->frameCount; dpadAction = false; }
+
+        if(dpadAction)
+        {
+            if(data->cursor) data->cursor--;
+            else if(data->mov && data->pos) data->pos--;
+            else if(!data->mov) data->cursor = getListSize(data->folders) - 1;
+            else { data->cursor = MAX_FILEBROWSER_LINES - 1; data->pos = getListSize(data->folders) - MAX_FILEBROWSER_LINES; }
+            self->dirty = true;
+        }
+    }
+    else if(vpad.hold & VPAD_BUTTON_DOWN)
+    {
+        if(data->oldHold != VPAD_BUTTON_DOWN) { data->oldHold = VPAD_BUTTON_DOWN; data->frameCount = 30; dpadAction = true; }
+        else if(data->frameCount == 0) dpadAction = true;
+        else { --data->frameCount; dpadAction = false; }
+
+        if(dpadAction)
+        {
+            if(data->cursor + data->pos >= getListSize(data->folders) - 1) { data->cursor = data->pos = 0; }
+            else if(data->cursor < MAX_FILEBROWSER_LINES - 1) data->cursor++;
+            else data->pos++;
+            self->dirty = true;
+        }
+    }
+
+    if(vpad.trigger & VPAD_BUTTON_X)
+    {
+        switch((int)activeDevice)
+        {
+            case NUSDEV_USB: activeDevice = NUSDEV_SD; break;
+            case NUSDEV_SD: activeDevice = NUSDEV_MLC; break;
+            case NUSDEV_MLC: activeDevice = data->usbMounted ? NUSDEV_USB : NUSDEV_SD;
+        }
+        strcpy(data->path, (activeDevice & NUSDEV_USB) ? (data->usbMounted == NUSDEV_USB01 ? INSTALL_DIR_USB1 : INSTALL_DIR_USB2) : (activeDevice == NUSDEV_SD ? INSTALL_DIR_SD : INSTALL_DIR_MLC));
+        refreshDirList(data);
+        self->dirty = true;
+    }
+
+    if(vpad.trigger & VPAD_BUTTON_MINUS && sQ)
+    {
+        queueMenu();
+    }
+
+    if(data->oldHold && !(vpad.hold & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN))) data->oldHold = 0;
+}
+
+static void fileBrowserDraw(Screen *self)
+{
+    FileBrowserData *data = (FileBrowserData *)self->data;
+    bool sQ = data->installMenu ? getListSize(getTitleQueue()) : false;
+    drawFBMenuFrame(data->path, data->folders, data->pos, data->cursor, data->usbMounted != NUSDEV_NONE, data->installMenu, sQ);
+}
+
+static void fileBrowserExit(Screen *self)
+{
+    FileBrowserData *data = (FileBrowserData *)self->data;
+    if(data)
+    {
+        if(data->folders) destroyList(data->folders, true);
+        if(data->path) MEMFreeToDefaultHeap(data->path);
+        MEMFreeToDefaultHeap(data);
+    }
+    MEMFreeToDefaultHeap(self);
+}
+
+Screen *fileBrowserScreenGet(bool installMenu, bool allowNoIntro, FileBrowserCallback callback, void *userdata)
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL) return NULL;
+    FileBrowserData *data = MEMAllocFromDefaultHeap(sizeof(FileBrowserData));
+    if(data == NULL) { MEMFreeToDefaultHeap(self); return NULL; }
+    OSBlockSet(data, 0, sizeof(FileBrowserData));
+    data->path = MEMAllocFromDefaultHeap(FS_MAX_PATH);
+    data->folders = createList();
+    data->installMenu = installMenu;
+    data->allowNoIntro = allowNoIntro;
+    data->callback = callback;
+    data->userdata = userdata;
+    data->usbMounted = getUSB();
+    if(activeDevice == NUSDEV_NONE) activeDevice = data->usbMounted ? NUSDEV_USB : NUSDEV_SD;
+    strcpy(data->path, (activeDevice & NUSDEV_USB) ? (data->usbMounted == NUSDEV_USB01 ? INSTALL_DIR_USB1 : INSTALL_DIR_USB2) : (activeDevice == NUSDEV_SD ? INSTALL_DIR_SD : INSTALL_DIR_MLC));
+    refreshDirList(data);
+    self->onUpdate = fileBrowserUpdate;
+    self->onDraw = fileBrowserDraw;
+    self->onExit = fileBrowserExit;
+    self->data = data;
+    self->dirty = true;
+    return self;
+}
+
+void fileBrowserMenu(bool installMenu, bool allowNoIntro, FileBrowserCallback callback, void *userdata)
+{
+    Screen *s = fileBrowserScreenGet(installMenu, allowNoIntro, callback, userdata);
+    if(s) screenPush(s);
 }

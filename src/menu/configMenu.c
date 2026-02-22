@@ -1,6 +1,6 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
- * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  * Copyright (c) 2022 Xpl0itU <DaThinkingChair@protonmail.com>             *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
@@ -23,24 +23,31 @@
 
 #include <config.h>
 #include <input.h>
+#include <menu/config.h>
 #include <menu/download.h>
 #include <menu/main.h>
 #include <menu/utils.h>
 #include <renderer.h>
+#include <screen.h>
 #include <state.h>
 #include <swkbd_wrapper.h>
 #include <titles.h>
 
 #pragma GCC diagnostic ignored "-Wundef"
 #include <coreinit/mcp.h>
+#include <coreinit/memdefaultheap.h>
 #pragma GCC diagnostic pop
 
 #define ENTRY_COUNT 4
 
-static int cursorPos = 0;
-
-static void drawConfigMenu()
+typedef struct
 {
+    int cursorPos;
+} ConfigMenuData;
+
+static void drawConfigMenu(Screen *self)
+{
+    ConfigMenuData *data = (ConfigMenuData *)self->data;
     startNewFrame();
     char *toScreen = getToFrameBuffer();
 
@@ -72,7 +79,7 @@ static void drawConfigMenu()
     lineToFrame(MAX_LINES - 2, SCREEN_COLOR_WHITE);
     textToFrame(MAX_LINES - 1, ALIGNED_CENTER, localise("Press " BUTTON_B " to return"));
 
-    arrowToFrame(cursorPos, 0);
+    arrowToFrame(data->cursorPos, 0);
 
     drawFrame();
 }
@@ -241,65 +248,95 @@ static inline void switchRegion()
     setRegion(reg);
 }
 
+static void configMenuUpdate(Screen *self)
+{
+    ConfigMenuData *data = (ConfigMenuData *)self->data;
+
+    if(vpad.trigger & VPAD_BUTTON_B)
+    {
+        saveConfig(false);
+        screenPop();
+        return;
+    }
+
+    if(vpad.trigger & (VPAD_BUTTON_RIGHT | VPAD_BUTTON_LEFT | VPAD_BUTTON_A))
+    {
+        switch(data->cursorPos)
+        {
+            case 0:
+                switchMenuLanguage();
+                break;
+            case 1:
+                setUpdateCheck(!updateCheckEnabled());
+                break;
+            case 2:
+                setAutoResume(!autoResumeEnabled());
+                break;
+            case 3:
+                switchNotificationMethod();
+                break;
+            case 4:
+                switchRegion();
+                break;
+        }
+
+        self->dirty = true;
+    }
+    else if(vpad.trigger & VPAD_BUTTON_UP)
+    {
+        --data->cursorPos;
+        if(data->cursorPos < 0)
+            data->cursorPos = ENTRY_COUNT;
+        self->dirty = true;
+    }
+    else if(vpad.trigger & VPAD_BUTTON_DOWN)
+    {
+        ++data->cursorPos;
+        if(data->cursorPos > ENTRY_COUNT)
+            data->cursorPos = 0;
+        self->dirty = true;
+    }
+}
+
+static void configMenuDraw(Screen *self)
+{
+    drawConfigMenu(self);
+}
+
+static void configMenuExit(Screen *self)
+{
+    if(self->data)
+        MEMFreeToDefaultHeap(self->data);
+    MEMFreeToDefaultHeap(self);
+}
+
+Screen *configMenuScreenGet()
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL)
+        return NULL;
+
+    ConfigMenuData *data = MEMAllocFromDefaultHeap(sizeof(ConfigMenuData));
+    if(data == NULL)
+    {
+        MEMFreeToDefaultHeap(self);
+        return NULL;
+    }
+
+    data->cursorPos = 0;
+
+    self->onUpdate = configMenuUpdate;
+    self->onDraw = configMenuDraw;
+    self->onExit = configMenuExit;
+    self->data = data;
+    self->dirty = true;
+
+    return self;
+}
+
 void configMenu()
 {
-    bool redraw = true;
-    while(AppRunning(true))
-    {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
-        if(app == APP_STATE_RETURNING)
-            redraw = true;
-
-        if(redraw)
-        {
-            drawConfigMenu();
-            redraw = false;
-        }
-        showFrame();
-
-        if(vpad.trigger & VPAD_BUTTON_B)
-        {
-            saveConfig(false);
-            return;
-        }
-
-        if(vpad.trigger & (VPAD_BUTTON_RIGHT | VPAD_BUTTON_LEFT | VPAD_BUTTON_A))
-        {
-            switch(cursorPos)
-            {
-                case 0:
-                    switchMenuLanguage();
-                    break;
-                case 1:
-                    setUpdateCheck(!updateCheckEnabled());
-                    break;
-                case 2:
-                    setAutoResume(!autoResumeEnabled());
-                    break;
-                case 3:
-                    switchNotificationMethod();
-                    break;
-                case 4:
-                    switchRegion();
-                    break;
-            }
-
-            redraw = true;
-        }
-        else if(vpad.trigger & VPAD_BUTTON_UP)
-        {
-            --cursorPos;
-            if(cursorPos < 0)
-                cursorPos = ENTRY_COUNT;
-            redraw = true;
-        }
-        else if(vpad.trigger & VPAD_BUTTON_DOWN)
-        {
-            ++cursorPos;
-            if(cursorPos > ENTRY_COUNT)
-                cursorPos = 0;
-            redraw = true;
-        }
-    }
+    Screen *s = configMenuScreenGet();
+    if(s)
+        screenPush(s);
 }

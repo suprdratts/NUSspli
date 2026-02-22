@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -43,6 +43,7 @@
 #include <queue.h>
 #include <renderer.h>
 #include <sanity.h>
+#include <screen.h>
 #include <state.h>
 #include <staticMem.h>
 #include <thread.h>
@@ -145,17 +146,13 @@ static void innerMain()
                                                 if(initQueue())
                                                 {
                                                     checkStacks("main()");
-                                                    if(!updateCheck())
-                                                    {
-                                                        initFSSpace();
-                                                        checkStacks("main");
-                                                        mainMenu(); // main loop
-                                                        drawByeFrame();
-                                                        checkStacks("main");
-                                                        debugPrintf("Deinitializing libraries...");
-                                                    }
-                                                    else
-                                                        drawByeFrame();
+                                                    initFSSpace();
+                                                    checkStacks("main");
+                                                    screenPush(updateCheckScreenGet());
+                                                    screenMainLoop();
+                                                    drawByeFrame();
+                                                    checkStacks("main");
+                                                    debugPrintf("Deinitializing libraries...");
 
                                                     shutdownQueue();
                                                 }
@@ -206,12 +203,8 @@ static void innerMain()
 
                 if(lerr != NULL)
                 {
-                    drawErrorFrame(lerr, ANY_RETURN);
-                    showFrame();
-
-                    while(!(vpad.trigger))
-                        showFrame();
-
+                    showErrorFrame(lerr);
+                    screenMainLoop();
                     drawByeFrame();
                 }
 

@@ -19,6 +19,7 @@
 #include <wut-fixups.h>
 
 #include <stdbool.h>
+#include <stdio.h>
 
 #pragma GCC diagnostic ignored "-Wundef"
 #include <coreinit/cache.h>
@@ -39,6 +40,7 @@
 #include <state.h>
 #include <thread.h>
 #include <utils.h>
+#include <menu/utils.h>
 
 #define IO_MAX_FILE_BUFFER   (1024 * 1024) // 1 MB
 #define MAX_IO_QUEUE_ENTRIES (64 * (IO_MAX_FILE_BUFFER / (1024 * 1024))) // 64 MB
@@ -133,7 +135,7 @@ bool initIOThread()
             activeReadBuffer = activeWriteBuffer = 0;
             ioRunning = true;
 
-            ioThread = startThread("NUSspli I/O", THREAD_PRIORITY_HIGH, STACKSIZE_SMALL, ioThreadMain, 0, NULL, OS_THREAD_ATTRIB_AFFINITY_CPU2); // We move this to core 2 for maximum performance. Later on move it back to core 1 as we want download threads on core 0 and 2.
+            ioThread = startThread("NUSspli I/O", THREAD_PRIORITY_HIGH, STACKSIZE_SMALL, ioThreadMain, 0, NULL, OS_THREAD_ATTRIB_AFFINITY_CPU2);
             if(ioThread != NULL)
                 return true;
 
@@ -155,28 +157,12 @@ bool checkForQueueErrors()
         {
             char *errMsg = getToFrameBuffer();
             sprintf(errMsg, "Write error:\n%s\n\nThis is an unrecoverable error!\nPress any button to exit.", translateFSErr(fwriteErrno));
-            fwriteOverlay = addErrorOverlay(errMsg);
-
-            if(fwriteOverlay != NULL)
-            {
-                while(AppRunning(true))
-                {
-                    showFrame();
-
-                    if(vpad.trigger)
-                        break;
-                }
-
-                removeErrorOverlay((void *)fwriteOverlay);
-            }
-
-            if(AppRunning(true))
-                homeButtonCallback((void *)true);
+            showErrorFrame(errMsg);
+            fwriteOverlay = (void *)1; // dummy
+            homeButtonCallback((void *)true);
         }
-
         return true;
     }
-
     return false;
 }
 
@@ -220,7 +206,8 @@ retryAddingToQueue:
         if(checkForQueueErrors())
             return 0;
 
-        goto retryAddingToQueue; // We use goto here instead of just calling addToIOQueue again to not overgrow the stack.
+        OSSleepTicks(OSMillisecondsToTicks(1));
+        goto retryAddingToQueue;
     }
 
 #ifdef NUSSPLI_DEBUG
@@ -244,13 +231,12 @@ retryAddingToQueue:
             OSBlockMove((void *)(entry->buf + entry->size), buf, ns, false);
             entry->size = IO_MAX_FILE_BUFFER;
 
-            // TODO: Deduplicate code
             entry->file = file;
             if(++activeReadBuffer == MAX_IO_QUEUE_ENTRIES)
                 activeReadBuffer = 0;
 
             size -= ns;
-            const uint8_t *newPtr = buf;
+            const uint8_t *newPtr = (const uint8_t *)buf;
             newPtr += ns;
             addToIOQueue((const void *)newPtr, 1, size, file);
             return n;
@@ -258,12 +244,11 @@ retryAddingToQueue:
 
         OSBlockMove((void *)(entry->buf + entry->size), buf, size, false);
         entry->size = ns;
-        if(ns != IO_MAX_FILE_BUFFER) // ns < IO_MAX_FILE_BUFFER
+        if(ns != IO_MAX_FILE_BUFFER)
             return n;
     }
     else if(entry->size != 0)
     {
-        // TODO: Deduplicate code
         entry->file = file;
         if(++activeReadBuffer == MAX_IO_QUEUE_ENTRIES)
             activeReadBuffer = 0;
@@ -283,19 +268,15 @@ void flushIOQueue()
     OSMemoryBarrier();
     if(queueEntries[activeWriteBuffer].file != 0)
     {
-        void *ovl = addErrorOverlay("Flushing queue, please wait...");
         debugPrintf("Flushing...");
-
         while(queueEntries[activeWriteBuffer].file != 0)
+        {
             if(checkForQueueErrors())
                 break;
-
-        if(ovl != NULL)
-            removeErrorOverlay(ovl);
-
+            OSSleepTicks(OSMillisecondsToTicks(1));
+        }
         OSMemoryBarrier();
     }
-
     checkForQueueErrors();
 }
 

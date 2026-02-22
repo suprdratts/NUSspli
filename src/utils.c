@@ -31,6 +31,7 @@
 #include <localisation.h>
 #include <menu/utils.h>
 #include <renderer.h>
+#include <screen.h>
 #include <state.h>
 #include <utils.h>
 
@@ -38,6 +39,7 @@
 #include <coreinit/atomic.h>
 #include <coreinit/ios.h>
 #include <coreinit/memory.h>
+#include <coreinit/memdefaultheap.h>
 #pragma GCC diagnostic pop
 
 int mcpHandle;
@@ -192,96 +194,152 @@ void glueMcpData(MCPInstallTitleInfo *info, McpData *data)
     *++ptr = (uint32_t)data;
 }
 
-void showMcpProgress(McpData *data, const char *game, bool inst)
+typedef struct
 {
-    MCPInstallProgress progress __attribute__((__aligned__(0x40))) = { .inProgress = 0, .sizeTotal = 0 };
-    char *toScreen = getToFrameBuffer();
-    MCPError err;
-    OSTime lastSpeedCalc = 0;
-    OSTime now;
-    uint64_t lsp = 0;
+    McpData *mcp_data;
+    char *game;
+    bool inst;
+    void *ovl;
+    MCPInstallProgress progress;
+    OSTime lastSpeedCalc;
+    uint64_t lsp;
     char speedBuf[32];
-    speedBuf[0] = '\0';
-    void *ovl = NULL;
+    ResultCallback callback;
+    void *userdata;
+} McpProgressData;
 
-    while(data->processing)
+static void mcpProgressUpdate(Screen *self)
+{
+    McpProgressData *data = (McpProgressData *)self->data;
+
+    if(!data->mcp_data->processing)
     {
-        err = MCP_InstallGetProgress(mcpHandle, &progress);
-        if(err == IOS_ERROR_OK)
+        screenPop();
+        if(data->callback) data->callback(data->mcp_data->err == 0, data->userdata);
+        return;
+    }
+
+    MCPError err = MCP_InstallGetProgress(mcpHandle, &data->progress);
+    if(err == IOS_ERROR_OK)
+    {
+        if(data->progress.inProgress == 1 && data->progress.sizeTotal != 0 && data->mcp_data->err != CUSTOM_MCP_ERROR_CANCELLED)
         {
-            if(progress.inProgress == 1 && progress.sizeTotal != 0 && data->err != CUSTOM_MCP_ERROR_CANCELLED)
-            {
-                startNewFrame();
-                strcpy(toScreen, localise(inst ? "Installing" : "Uninstalling"));
-                strcat(toScreen, " ");
-                strcat(toScreen, game);
-                textToFrame(0, 0, toScreen);
-                barToFrame(1, 0, 40, (float)progress.sizeProgress / (float)progress.sizeTotal);
-                humanize(progress.sizeProgress, toScreen);
-                strcat(toScreen, " / ");
-                humanize(progress.sizeTotal, toScreen + strlen(toScreen));
-                textToFrame(1, 41, toScreen);
-
-                if(progress.sizeProgress != 0)
-                {
-                    now = OSGetSystemTime();
-                    if(OSTicksToMilliseconds(now - lastSpeedCalc) > 333)
-                    {
-                        getSpeedString(progress.sizeProgress - lsp, speedBuf);
-                        lsp = progress.sizeProgress;
-                        lastSpeedCalc = now;
-                    }
-                    textToFrame(1, ALIGNED_RIGHT, speedBuf);
-                }
-
-                writeScreenLog(2);
-                drawFrame();
-            }
-        }
-        else
-            debugPrintf("MCP_InstallGetProgress() returned %#010x", err);
-
-        showFrame();
-
-        if(inst)
-        {
-            if(ovl == NULL)
-            {
-                if(vpad.trigger & VPAD_BUTTON_B)
-                {
-                    sprintf(toScreen, "%s\n\n" BUTTON_A " %s || " BUTTON_B " %s", localise("Do you really want to cancel?"), localise("Yes"), localise("No"));
-                    ovl = addErrorOverlay(toScreen);
-                }
-            }
-            else
-            {
-                if(vpad.trigger & VPAD_BUTTON_A)
-                {
-                    removeErrorOverlay(ovl);
-                    ovl = NULL;
-                    inst = false;
-
-                    startNewFrame();
-                    textToFrame(0, 0, localise("Cancelling installation."));
-                    textToFrame(1, 0, localise("Please wait..."));
-                    writeScreenLog(2);
-                    drawFrame();
-                    showFrame();
-
-                    MCP_InstallTitleAbort(mcpHandle);
-                    data->err = CUSTOM_MCP_ERROR_CANCELLED;
-                }
-                else if(vpad.trigger & VPAD_BUTTON_B)
-                {
-                    removeErrorOverlay(ovl);
-                    ovl = NULL;
-                }
-            }
+            self->dirty = true;
         }
     }
 
-    if(ovl != NULL)
-        removeErrorOverlay(ovl);
+    if(data->inst)
+    {
+        if(data->ovl == NULL)
+        {
+            if(vpad.trigger & VPAD_BUTTON_B)
+            {
+                char toScreen[512];
+                sprintf(toScreen, "%s\n\n" BUTTON_A " %s || " BUTTON_B " %s", localise("Do you really want to cancel?"), localise("Yes"), localise("No"));
+                data->ovl = addErrorOverlay(toScreen);
+            }
+        }
+        else
+        {
+            if(vpad.trigger & VPAD_BUTTON_A)
+            {
+                removeErrorOverlay(data->ovl);
+                data->ovl = NULL;
+                data->inst = false;
+
+                startNewFrame();
+                textToFrame(0, 0, localise("Cancelling installation."));
+                textToFrame(1, 0, localise("Please wait..."));
+                writeScreenLog(2);
+                drawFrame();
+
+                MCP_InstallTitleAbort(mcpHandle);
+                data->mcp_data->err = CUSTOM_MCP_ERROR_CANCELLED;
+            }
+            else if(vpad.trigger & VPAD_BUTTON_B)
+            {
+                removeErrorOverlay(data->ovl);
+                data->ovl = NULL;
+            }
+        }
+    }
+}
+
+static void mcpProgressDraw(Screen *self)
+{
+    McpProgressData *data = (McpProgressData *)self->data;
+    char *toScreen = getToFrameBuffer();
+
+    if(data->progress.inProgress == 1 && data->progress.sizeTotal != 0 && data->mcp_data->err != CUSTOM_MCP_ERROR_CANCELLED)
+    {
+        startNewFrame();
+        strcpy(toScreen, localise(data->inst ? "Installing" : "Uninstalling"));
+        strcat(toScreen, " ");
+        strcat(toScreen, data->game);
+        textToFrame(0, 0, toScreen);
+        barToFrame(1, 0, 40, (float)data->progress.sizeProgress / (float)data->progress.sizeTotal);
+        humanize(data->progress.sizeProgress, toScreen);
+        strcat(toScreen, " / ");
+        humanize(data->progress.sizeTotal, toScreen + strlen(toScreen));
+        textToFrame(1, 41, toScreen);
+
+        if(data->progress.sizeProgress != 0)
+        {
+            OSTime now = OSGetSystemTime();
+            if(OSTicksToMilliseconds(now - data->lastSpeedCalc) > 333)
+            {
+                getSpeedString(data->progress.sizeProgress - data->lsp, data->speedBuf);
+                data->lsp = data->progress.sizeProgress;
+                data->lastSpeedCalc = now;
+            }
+            textToFrame(1, ALIGNED_RIGHT, data->speedBuf);
+        }
+
+        writeScreenLog(2);
+        drawFrame();
+    }
+}
+
+static void mcpProgressExit(Screen *self)
+{
+    McpProgressData *data = (McpProgressData *)self->data;
+    if(data)
+    {
+        if(data->ovl) removeErrorOverlay(data->ovl);
+        if(data->game) MEMFreeToDefaultHeap(data->game);
+        MEMFreeToDefaultHeap(data);
+    }
+    MEMFreeToDefaultHeap(self);
+}
+
+void showMcpProgress(McpData *mcp_data, const char *game, bool inst, ResultCallback callback, void *userdata)
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL) return;
+
+    McpProgressData *data = MEMAllocFromDefaultHeap(sizeof(McpProgressData));
+    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+
+    OSBlockSet(data, 0, sizeof(McpProgressData));
+    data->mcp_data = mcp_data;
+    if(game)
+    {
+        data->game = MEMAllocFromDefaultHeap(strlen(game) + 1);
+        if(data->game) strcpy(data->game, game);
+    }
+    else
+        data->game = NULL;
+    data->inst = inst;
+    data->callback = callback;
+    data->userdata = userdata;
+
+    self->onUpdate = mcpProgressUpdate;
+    self->onDraw = mcpProgressDraw;
+    self->onExit = mcpProgressExit;
+    self->data = data;
+    self->dirty = true;
+
+    screenPush(self);
 }
 
 #ifdef NUSSPLI_DEBUG
@@ -297,27 +355,11 @@ void showMcpProgress(McpData *data, const char *game, bool inst)
 #include <whb/log_udp.h>
 
 static const char days[7][4] = {
-    "Sun",
-    "Mon",
-    "Tue",
-    "Wed",
-    "Thu",
-    "Fri",
-    "Sat",
+    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
 };
 
 static const char months[12][4] = {
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Nov",
-    "Dez",
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Nov", "Dez",
 };
 
 static spinlock debugLock;
@@ -351,17 +393,14 @@ void debugPrintf(const char *str, ...)
 {
     spinLock(debugLock);
     static char newStr[512];
-
     OSCalendarTime now;
     OSTicksToCalendarTime(OSGetTime(), &now);
     sprintf(newStr, "%s %02d %s %d %02d:%02d:%02d.%03d\t", days[now.tm_wday], now.tm_mday, months[now.tm_mon], now.tm_year, now.tm_hour, now.tm_min, now.tm_sec, now.tm_msec);
     size_t tss = strlen(newStr);
-
     va_list va;
     va_start(va, str);
     vsnprintf(newStr + tss, 511 - tss, str, va);
     va_end(va);
-
     WHBLogPrint(newStr);
     spinReleaseLock(debugLock);
 }
@@ -374,4 +413,4 @@ void checkStacks(const char *src)
     debugPrintf("%s: 0x%08X/0x%08X", src, OSCheckThreadStackUsage(trd), ((uint32_t)trd->stackStart) - ((uint32_t)trd->stackEnd));
 }
 
-#endif // ifdef NUSSPLI_DEBUG
+#endif

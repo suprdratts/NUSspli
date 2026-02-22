@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2022 Xpl0itU <DaThinkingChair@protonmail.com>             *
- * Copyright (c) 2022-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2022-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -24,6 +24,7 @@
 #include <list.h>
 #include <menu/utils.h>
 #include <queue.h>
+#include <screen.h>
 #include <state.h>
 
 #pragma GCC diagnostic ignored "-Wundef"
@@ -78,33 +79,85 @@ static inline void removeFQ(TitleData *title)
     }
 }
 
-bool proccessQueue()
+typedef struct
 {
-    TitleData *title;
+    QUEUE_DATA queueData;
+    ResultCallback callback;
+    void *userdata;
+    int state;
+} ProcessQueueData;
+
+static void queueItemDone(bool result, void *userdata)
+{
+    Screen *self = (Screen *)userdata;
+    ProcessQueueData *data = (ProcessQueueData *)self->data;
+    if(!result)
+    {
+        screenPop();
+        if(data->callback) data->callback(false, data->userdata);
+        return;
+    }
+    data->state = 1; // Process next item
+}
+
+static void processQueueUpdate(Screen *self)
+{
+    ProcessQueueData *data = (ProcessQueueData *)self->data;
+    TitleData *title = getContent(titleQueue, 0);
+
+    if(title == NULL)
+    {
+        enableApd();
+        screenPop();
+        if(data->callback) data->callback(true, data->userdata);
+        return;
+    }
+
+    switch(data->state)
+    {
+        case 0: // Pre-checks done, start processing
+            disableApd();
+            data->state = 1;
+            break;
+        case 1: // Start next item
+            data->state = 2;
+            if(title->operation & OPERATION_DOWNLOAD)
+            {
+                data->queueData.current++;
+                downloadTitle(title->tmd, title->tmdSize, title->entry, title->titleVer, title->folderName, title->operation & OPERATION_INSTALL, title->dlDev, title->toUSB, title->keepFiles, &data->queueData, queueItemDone, self);
+                removeFQ(title);
+            }
+            else if(title->operation & OPERATION_INSTALL)
+            {
+                install(title->entry == NULL ? prettyDir(title->folderName) : title->entry->name, false, title->dlDev, title->folderName, title->toUSB, title->keepFiles, title->tmd, queueItemDone, self);
+                removeFQ(title);
+            }
+            break;
+        default: break;
+    }
+}
+
+void processQueue(ResultCallback callback, void *userdata)
+{
+    // Pre-checks for space
     uint64_t sizes[3] = { 0, 0, 0 };
-    QUEUE_DATA queueData = { .downloaded = 0, .dlSize = 0, .packages = 0, .current = 0, .eta = -1 };
+    TitleData *title;
+    QUEUE_DATA qd = { .downloaded = 0, .dlSize = 0, .packages = 0, .current = 0, .eta = -1 };
 
     forEachListEntry(titleQueue, title)
     {
-        if(title->operation & OPERATION_DOWNLOAD)
-            queueData.packages++;
+        if(title->operation & OPERATION_DOWNLOAD) qd.packages++;
         for(uint16_t i = 0; i < title->tmd->num_contents; ++i)
         {
-            if(title->operation & OPERATION_INSTALL)
-                sizes[title->toUSB ? 0 : 2] += title->tmd->contents[i].size;
-
+            if(title->operation & OPERATION_INSTALL) sizes[title->toUSB ? 0 : 2] += title->tmd->contents[i].size;
             if(title->operation & OPERATION_DOWNLOAD)
             {
-                queueData.dlSize += title->tmd->contents[i].size;
-                if(title->tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED)
-                    queueData.dlSize += getH3size(title->tmd->contents[i].size);
-
+                qd.dlSize += title->tmd->contents[i].size;
+                if(title->tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED) qd.dlSize += getH3size(title->tmd->contents[i].size);
                 if(title->keepFiles)
                 {
                     int j = title->dlDev & NUSDEV_USB ? 0 : (title->dlDev & NUSDEV_SD ? 1 : 2);
-                    if(title->tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED)
-                        sizes[j] += getH3size(title->tmd->contents[i].size);
-
+                    if(title->tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED) sizes[j] += getH3size(title->tmd->contents[i].size);
                     sizes[j] += title->tmd->contents[i].size;
                 }
             }
@@ -115,54 +168,28 @@ bool proccessQueue()
     {
         if(sizes[i] != 0)
         {
-            NUSDEV toCheck;
-            switch(i)
-            {
-                case 0:
-                    toCheck = getUSB();
-                    break;
-                case 1:
-                    toCheck = NUSDEV_SD;
-                    break;
-                default:
-                    toCheck = NUSDEV_MLC;
-            }
-
-            if(!checkFreeSpace(toCheck, sizes[i]))
-                return false;
+            NUSDEV toCheck = (i == 0) ? getUSB() : (i == 1 ? NUSDEV_SD : NUSDEV_MLC);
+            if(!checkFreeSpace(toCheck, sizes[i])) { if(callback) callback(false, userdata); return; }
         }
     }
 
-    TitleData *last = NULL;
-    disableApd();
-    forEachListEntry(titleQueue, title)
-    {
-        removeFQ(last);
-        if(!AppRunning(true))
-            goto exitApd;
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL) return;
+    ProcessQueueData *data = MEMAllocFromDefaultHeap(sizeof(ProcessQueueData));
+    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
 
-        if(title->operation & OPERATION_DOWNLOAD)
-        {
-            queueData.current++;
+    data->queueData = qd;
+    data->callback = callback;
+    data->userdata = userdata;
+    data->state = 0;
 
-            if(!downloadTitle(title->tmd, title->tmdSize, title->entry, title->titleVer, title->folderName, title->operation & OPERATION_INSTALL, title->dlDev, title->toUSB, title->keepFiles, &queueData))
-                goto exitApd;
-        }
-        else if(title->operation & OPERATION_INSTALL)
-        {
-            if(!install(title->entry == NULL ? prettyDir(title->folderName) : title->entry->name, false /* TODO */, title->dlDev, title->folderName, title->toUSB, title->keepFiles, title->tmd))
-                goto exitApd;
-        }
+    self->onUpdate = processQueueUpdate;
+    self->onDraw = NULL;
+    self->onExit = NULL;
+    self->data = data;
+    self->dirty = false;
 
-        last = title;
-    }
-
-    removeFQ(last);
-    enableApd();
-    return true;
-exitApd:
-    enableApd();
-    return false;
+    screenPush(self);
 }
 
 bool removeFromQueue(uint32_t index)

@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019 Pokes303                                             *
- * Copyright (c) 2020 V10lator <v10lator@myway.de>                         *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -49,21 +49,25 @@ extern "C"
         FINISHING_OPERATION_QUEUE
     } FINISHING_OPERATION;
 
+    typedef void (*ResultCallback)(bool result, void *userdata);
+
     void addToScreenLog(const char *str, ...);
     void clearScreenLog();
     void writeScreenLog(int line);
     void drawErrorFrame(const char *text, ErrorOptions option);
     void showErrorFrame(const char *text);
-    bool checkSystemTitle(uint64_t tid, MCPRegion region, bool deinstall);
-    bool checkSystemTitleFromEntry(const TitleEntry *entry, bool deinstall);
-    bool checkSystemTitleFromTid(uint64_t tid, bool deinstall);
-    bool checkSystemTitleFromListType(MCPTitleListType *entry, bool deinstall);
+    void checkSystemTitle(uint64_t tid, MCPRegion region, bool deinstall, ResultCallback callback, void *userdata);
+    void checkSystemTitleFromEntry(const TitleEntry *entry, bool deinstall, ResultCallback callback, void *userdata);
+    void checkSystemTitleFromTid(uint64_t tid, bool deinstall, ResultCallback callback, void *userdata);
+    void checkSystemTitleFromListType(MCPTitleListType *entry, bool deinstall, ResultCallback callback, void *userdata);
+
     const char *prettyDir(const char *dir);
     void showFinishedScreen(const char *titleName, FINISHING_OPERATION op);
     void showNoSpaceOverlay(NUSDEV dev);
     void humanize(uint64_t size, char *out);
     void getFreeSpaceString(NUSDEV dev, char *out);
-    bool showExitOverlay(bool really);
+    void showExitOverlay(bool really, ResultCallback callback, void *userdata);
+    void showConfirmation(const char *text, ResultCallback callback, void *userdata);
 
 #ifdef __cplusplus
 }

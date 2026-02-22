@@ -1,6 +1,6 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
- * Copyright (c) 2023 V10lator <v10lator@myway.de>                         *
+ * Copyright (c) 2023 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -22,6 +22,7 @@
 
 #include <stdbool.h>
 
+#include <menu/utils.h>
 #include <ticket.h>
 #include <tmd.h>
 
@@ -38,9 +39,11 @@ extern "C"
         uint32_t ac;
     } NO_INTRO_DATA;
 
+    typedef void (*NoIntroCallback)(NO_INTRO_DATA *data, void *userdata);
+
     void destroyNoIntroData(NO_INTRO_DATA *data);
     void revertNoIntro(NO_INTRO_DATA *data);
-    NO_INTRO_DATA *transformNoIntro(const char *path);
+    void transformNoIntro(const char *path, NoIntroCallback callback, void *userdata);
 
 #ifdef __cplusplus
 }

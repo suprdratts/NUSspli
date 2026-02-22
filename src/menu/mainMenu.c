@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
  * Copyright (c) 2022 Xpl0itU <DaThinkingChair@protonmail.com>             *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
@@ -33,6 +33,7 @@
 #include <menu/titlebrowser.h>
 #include <menu/utils.h>
 #include <renderer.h>
+#include <screen.h>
 #include <state.h>
 #include <staticMem.h>
 #include <ticket.h>
@@ -86,70 +87,83 @@ static void drawMainMenuFrame()
     drawFrame();
 }
 
+static void exitCallback(bool ok, void *userdata)
+{
+    (void)userdata;
+    if(ok)
+    {
+        screenPop();
+    }
+}
+
+static void mainMenuUpdate(Screen *self)
+{
+    if(vpad.trigger & VPAD_BUTTON_B)
+    {
+        showExitOverlay(true, exitCallback, NULL);
+    }
+    else if(vpad.trigger & VPAD_BUTTON_A)
+    {
+        switch(cursorPos)
+        {
+            case 11:
+                titleBrowserMenu();
+                break;
+            case 12:
+                installerMenu();
+                break;
+            case 13:
+                generateFakeTicket();
+                break;
+            case 14:
+                ititleBrowserMenu();
+                break;
+            case 15:
+                configMenu();
+                break;
+            case 16:
+                logsMenu();
+                break;
+        }
+
+        self->dirty = true;
+    }
+    else if(vpad.trigger & VPAD_BUTTON_DOWN)
+    {
+        if(++cursorPos == 17)
+            cursorPos = 11;
+
+        self->dirty = true;
+    }
+    else if(vpad.trigger & VPAD_BUTTON_UP)
+    {
+        if(--cursorPos == 10)
+            cursorPos = 16;
+
+        self->dirty = true;
+    }
+}
+
+static void mainMenuDraw(Screen *self)
+{
+    (void)self;
+    drawMainMenuFrame();
+}
+
+static Screen mainMenuScreen = {
+    .onUpdate = mainMenuUpdate,
+    .onDraw = mainMenuDraw,
+    .onExit = NULL,
+    .data = NULL,
+    .dirty = true
+};
+
+Screen *mainMenuScreenGet()
+{
+    return &mainMenuScreen;
+}
+
 void mainMenu()
 {
-    bool redraw = true;
-    while(AppRunning(true))
-    {
-        if(app == APP_STATE_BACKGROUND)
-            continue;
-        if(app == APP_STATE_RETURNING)
-            redraw = true;
-
-        if(redraw)
-        {
-            drawMainMenuFrame();
-            redraw = false;
-        }
-        showFrame();
-
-        if(vpad.trigger & VPAD_BUTTON_B)
-        {
-            if(showExitOverlay(true))
-            {
-                drawByeFrame();
-                return;
-            }
-        }
-        else if(vpad.trigger & VPAD_BUTTON_A)
-        {
-            switch(cursorPos)
-            {
-                case 11:
-                    titleBrowserMenu();
-                    break;
-                case 12:
-                    installerMenu();
-                    break;
-                case 13:
-                    generateFakeTicket();
-                    break;
-                case 14:
-                    ititleBrowserMenu();
-                    break;
-                case 15:
-                    configMenu();
-                    break;
-                case 16:
-                    logsMenu();
-                    break;
-            }
-
-            redraw = true;
-        }
-        else if(vpad.trigger & VPAD_BUTTON_DOWN)
-        {
-            if(++cursorPos == 17)
-                cursorPos = 11;
-
-            redraw = true;
-        }
-        else if(vpad.trigger & VPAD_BUTTON_UP)
-        {
-            if(--cursorPos == 10)
-                cursorPos = 16;
-
-            redraw = true;
-        }
-    }
+    screenPush(&mainMenuScreen);
 }

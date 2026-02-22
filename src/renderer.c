@@ -762,11 +762,11 @@ static inline void quitSDL()
         OSSleepTicks(OSMillisecondsToTicks(20));
         Mix_FreeMusic(backgroundMusic);
         backgroundMusic = NULL;
+        Mix_CloseAudio();
     }
 
-    if(Mix_WasInit(0))
+    if(Mix_Init(0))
     {
-        Mix_CloseAudio();
         Mix_Quit();
     }
 

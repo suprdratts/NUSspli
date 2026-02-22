@@ -32,6 +32,7 @@
 #include <coreinit/energysaver.h>
 #include <coreinit/foreground.h>
 #include <coreinit/mcp.h>
+#include <coreinit/thread.h>
 #include <coreinit/time.h>
 #include <coreinit/title.h>
 #include <nn/acp/client.h>

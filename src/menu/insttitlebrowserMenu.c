@@ -87,9 +87,13 @@ static volatile INST_META *getInstalledTitle(ITBData *data, size_t index, bool b
     if(title->ready)
         return title;
     if(block)
+    {
         spinLock(title->lock);
+    }
     else if(!spinTryLock(title->lock))
+    {
         return NULL;
+    }
     if(!title->ready)
     {
         MCPTitleListType *list = data->ititleEntries + index;
@@ -322,7 +326,7 @@ Screen *ititleBrowserScreenGet()
         data->installedTitles[i].ready = false;
     }
     data->asyncState = ASYNC_STATE_FWD;
-    data->bgt = startThread("NUSspli title loader", THREAD_PRIORITY_MEDIUM, STACKSIZE_MEDIUM, asyncTitleLoader, 0, (const char **)data, OS_THREAD_ATTRIB_AFFINITY_CPU0);
+    data->bgt = startThread("NUSspli title loader", THREAD_PRIORITY_MEDIUM, STACKSIZE_MEDIUM, asyncTitleLoader, 0, (char *)data, OS_THREAD_ATTRIB_AFFINITY_CPU0);
     self->onUpdate = ititleBrowserUpdate;
     self->onDraw = ititleBrowserDraw;
     self->onExit = ititleBrowserExit;

@@ -14,7 +14,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -417,7 +417,6 @@ void showNoSpaceOverlay(NUSDEV dev)
     {
         while(AppRunning(true))
         {
-
             showFrame();
 
             if(vpad.trigger)
@@ -454,7 +453,6 @@ bool showExitOverlay(bool really)
     {
         while(AppRunning(true))
         {
-
             showFrame();
 
             if(vpad.trigger & VPAD_BUTTON_A)

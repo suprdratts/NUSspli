@@ -14,7 +14,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -112,17 +112,6 @@ bool isChannel()
     return channel;
 }
 
-uint32_t homeButtonCallback(void *dummy)
-{
-    if(((bool)dummy) || (shutdownEnabled && showExitOverlay(true)))
-    {
-        shutdownEnabled = false;
-        app = APP_STATE_HOME;
-    }
-
-    return 0;
-}
-
 static uint32_t onAcquire(void *dummy)
 {
     app = APP_STATE_RETURNING;
@@ -132,6 +121,17 @@ static uint32_t onAcquire(void *dummy)
 static uint32_t onRelease(void *dummy)
 {
     app = APP_STATE_BACKGROUND;
+    return 0;
+}
+
+uint32_t homeButtonCallback(void *dummy)
+{
+    if(((bool)dummy) || (shutdownEnabled && showExitOverlay(true)))
+    {
+        shutdownEnabled = false;
+        app = APP_STATE_HOME;
+    }
+
     return 0;
 }
 
@@ -146,8 +146,6 @@ void initState()
     debugPrintf("NUSspli " NUSSPLI_VERSION);
 
     ProcUIRegisterCallback(PROCUI_CALLBACK_HOME_BUTTON_DENIED, &homeButtonCallback, (void *)false, 100);
-    ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, &onAcquire, NULL, 100);
-    ProcUIRegisterCallback(PROCUI_CALLBACK_RELEASE, &onRelease, NULL, 100);
     OSEnableHomeButtonMenu(false);
     ACPInitialize();
 
@@ -199,11 +197,9 @@ bool AppRunning(bool mainthread)
             switch(status)
             {
                 case PROCUI_STATUS_EXITING:
-                    // Real exit request from CafeOS
                     app = APP_STATE_STOPPED;
                     return false;
                 case PROCUI_STATUS_RELEASE_FOREGROUND:
-                    // Exit with power button
                     app = APP_STATE_STOPPING;
                     drawByeFrame();
                     return false;

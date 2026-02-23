@@ -14,7 +14,7 @@
  * GNU General Public License for more details.                            *
  *                                                                         *
  * You should have received a copy of the GNU General Public License along *
- * with this program; if not, see <http://www.gnu.org/licenses/>.  *
+ * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <wut-fixups.h>
@@ -139,7 +139,7 @@ FSError moveDirectory(const char *src, const char *dest)
             ++inDest;
 
             FSADirectoryEntry entry;
-            while(ret == FS_ERROR_OK && FSAReadDir(getFSAClient(), dir, &entry) == FS_ERROR_OK)
+            while( FSAReadDir(getFSAClient(), dir, &entry) == FS_ERROR_OK)
             {
                 len = strlen(entry.name);
                 OSBlockMove(inSrc, entry.name, ++len, false);
@@ -257,7 +257,7 @@ size_t getDirsize(const char *path)
 
         if(FSAOpenDir(getFSAClient(), newPath, &dir) == FS_ERROR_OK)
         {
-            while(FSAReadDir(getFSAClient(), dir, &entry) == FS_ERROR_OK)
+            while( FSAReadDir(getFSAClient(), dir, &entry) == FS_ERROR_OK)
             {
                 strcpy(newPath + start, entry.name);
                 ret += entry.info.flags & FS_STAT_DIRECTORY ? getDirsize(newPath) : entry.info.size;

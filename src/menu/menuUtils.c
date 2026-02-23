@@ -169,6 +169,7 @@ typedef struct
 
 static void errorUpdate(Screen *self)
 {
+    (void)self;
     if(vpad.trigger)
         screenPop();
 }
@@ -369,6 +370,8 @@ void checkSystemTitle(uint64_t tid, MCPRegion region, bool deinstall, ResultCall
                         return;
                     }
                     break;
+                default:
+                    break;
             }
         }
     }
@@ -444,6 +447,7 @@ typedef struct
 
 static void finishedUpdate(Screen *self)
 {
+    (void)self;
     if(vpad.trigger)
         screenPop();
 }

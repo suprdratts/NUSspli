@@ -38,6 +38,7 @@ static void drawLogsFrame()
 
 static void logsMenuUpdate(Screen *self)
 {
+    (void)self;
     if(vpad.trigger)
     {
         screenPop();

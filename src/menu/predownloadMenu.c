@@ -609,13 +609,11 @@ Screen *predownloadScreenGet(const TitleEntry *entry)
     return self;
 }
 
-bool predownloadMenu(const TitleEntry *entry)
+void predownloadMenu(const TitleEntry *entry)
 {
     Screen *s = predownloadScreenGet(entry);
     if(s)
     {
         screenPush(s);
-        return true;
     }
-    return false;
 }

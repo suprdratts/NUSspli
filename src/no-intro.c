@@ -1,6 +1,6 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
- * Copyright (c) 2023 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2023 V10lator <v10lator@myway.de>                         *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -38,7 +38,8 @@
 
 void destroyNoIntroData(NO_INTRO_DATA *data)
 {
-    if(data->path) MEMFreeToDefaultHeap(data->path);
+    if(data->path)
+        MEMFreeToDefaultHeap(data->path);
     MEMFreeToDefaultHeap(data);
 }
 
@@ -144,8 +145,11 @@ static void transformUpdate(Screen *self)
             ret = FSAOpenDir(getFSAClient(), td->data->path, &td->dir);
             if(ret != FS_ERROR_OK)
             {
-                if(td->callback) td->callback(NULL, td->userdata);
+                NoIntroCallback cb = td->callback;
+                void *ud = td->userdata;
                 screenPop();
+                if(cb)
+                    cb(NULL, ud);
                 return;
             }
             td->state = 1;
@@ -153,22 +157,27 @@ static void transformUpdate(Screen *self)
         case 1: // Iterate dir
             if(FSAReadDir(getFSAClient(), td->dir, &entry) == FS_ERROR_OK)
             {
-                if(entry.info.flags & FS_STAT_DIRECTORY) return;
+                if(entry.info.flags & FS_STAT_DIRECTORY)
+                    return;
                 strcpy(fromP, entry.name);
                 if(strcmp(entry.name, "tmd") == 0)
                 {
                     strcpy(toP, "title.tmd");
-                    if(FSARename(getFSAClient(), td->data->path, td->pathTo) == FS_ERROR_OK) td->data->tmdFound = true;
+                    if(FSARename(getFSAClient(), td->data->path, td->pathTo) == FS_ERROR_OK)
+                        td->data->tmdFound = true;
                 }
                 else if(strcmp(entry.name, "cetk") == 0)
                 {
                     strcpy(toP, "title.tik");
-                    if(FSARename(getFSAClient(), td->data->path, td->pathTo) == FS_ERROR_OK) td->data->hadTicket = true;
+                    if(FSARename(getFSAClient(), td->data->path, td->pathTo) == FS_ERROR_OK)
+                        td->data->hadTicket = true;
                 }
                 else if(strlen(entry.name) == 8)
                 {
-                    strcpy(toP, entry.name); strcat(toP, ".app");
-                    if(FSARename(getFSAClient(), td->data->path, td->pathTo) == FS_ERROR_OK) td->data->ac++;
+                    strcpy(toP, entry.name);
+                    strcat(toP, ".app");
+                    if(FSARename(getFSAClient(), td->data->path, td->pathTo) == FS_ERROR_OK)
+                        td->data->ac++;
                 }
             }
             else
@@ -176,18 +185,52 @@ static void transformUpdate(Screen *self)
                 FSACloseDir(getFSAClient(), td->dir);
                 td->dir = 0;
                 *fromP = '\0';
-                if(!td->data->tmdFound || !td->data->ac) { revertNoIntro(td->data); if(td->callback) td->callback(NULL, td->userdata); screenPop(); return; }
+                if(!td->data->tmdFound || !td->data->ac)
+                {
+                    NO_INTRO_DATA *data = td->data;
+                    td->data = NULL;
+                    NoIntroCallback cb = td->callback;
+                    void *ud = td->userdata;
+                    revertNoIntro(data);
+                    screenPop();
+                    if(cb)
+                        cb(NULL, ud);
+                    return;
+                }
                 td->state = 2;
             }
             break;
         case 2: // TMD and TIK
         {
             TMD *tmd = getTmd(td->data->path, false);
-            if(tmd == NULL) { revertNoIntro(td->data); if(td->callback) td->callback(NULL, td->userdata); screenPop(); return; }
+            if(tmd == NULL)
+            {
+                NO_INTRO_DATA *data = td->data;
+                td->data = NULL;
+                NoIntroCallback cb = td->callback;
+                void *ud = td->userdata;
+                revertNoIntro(data);
+                screenPop();
+                if(cb)
+                    cb(NULL, ud);
+                return;
+            }
             if(!td->data->hadTicket)
             {
                 strcpy(fromP, "title.tik");
-                if(!generateTik(td->data->path, tmd)) { MEMFreeToDefaultHeap(tmd); revertNoIntro(td->data); if(td->callback) td->callback(NULL, td->userdata); screenPop(); return; }
+                if(!generateTik(td->data->path, tmd))
+                {
+                    MEMFreeToDefaultHeap(tmd);
+                    NO_INTRO_DATA *data = td->data;
+                    td->data = NULL;
+                    NoIntroCallback cb = td->callback;
+                    void *ud = td->userdata;
+                    revertNoIntro(data);
+                    screenPop();
+                    if(cb)
+                        cb(NULL, ud);
+                    return;
+                }
             }
             strcpy(fromP, "title.cert");
             td->state = 3; // Waiting for cert
@@ -195,12 +238,20 @@ static void transformUpdate(Screen *self)
             MEMFreeToDefaultHeap(tmd);
             break;
         }
-        case 4: // Finished
+        case 4: // Finished cert
+        {
             *fromP = '\0';
-            if(td->callback) td->callback(td->data, td->userdata);
+            NoIntroCallback cb = td->callback;
+            NO_INTRO_DATA *data = td->data;
+            void *ud = td->userdata;
+            td->data = NULL; // Prevent freeing in onExit
             screenPop();
+            if(cb)
+                cb(data, ud);
             break;
-        default: break;
+        }
+        default:
+            break;
     }
 }
 
@@ -209,8 +260,12 @@ static void transformExit(Screen *self)
     TransformData *td = (TransformData *)self->data;
     if(td)
     {
-        if(td->dir) FSACloseDir(getFSAClient(), td->dir);
-        if(td->pathTo) MEMFreeToDefaultHeap(td->pathTo);
+        if(td->dir)
+            FSACloseDir(getFSAClient(), td->dir);
+        if(td->pathTo)
+            MEMFreeToDefaultHeap(td->pathTo);
+        if(td->data)
+            destroyNoIntroData(td->data);
         MEMFreeToDefaultHeap(td);
     }
     MEMFreeToDefaultHeap(self);
@@ -220,14 +275,24 @@ void transformNoIntro(const char *path, NoIntroCallback callback, void *userdata
 {
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
     TransformData *td = MEMAllocFromDefaultHeap(sizeof(TransformData));
-    if(!self || !td) { if(self) MEMFreeToDefaultHeap(self); if(td) MEMFreeToDefaultHeap(td); if(callback) callback(NULL, userdata); return; }
+    if(!self || !td)
+    {
+        if(self)
+            MEMFreeToDefaultHeap(self);
+        if(td)
+            MEMFreeToDefaultHeap(td);
+        if(callback)
+            callback(NULL, userdata);
+        return;
+    }
 
     OSBlockSet(td, 0, sizeof(TransformData));
     td->data = MEMAllocFromDefaultHeap(sizeof(NO_INTRO_DATA));
     td->data->path = MEMAllocFromDefaultHeap(FS_MAX_PATH);
     td->pathTo = MEMAllocFromDefaultHeap(FS_MAX_PATH);
     strcpy(td->data->path, path);
-    if(td->data->path[strlen(path)-1] != '/') strcat(td->data->path, "/");
+    if(td->data->path[strlen(path) - 1] != '/')
+        strcat(td->data->path, "/");
     strcpy(td->pathTo, td->data->path);
     td->callback = callback;
     td->userdata = userdata;

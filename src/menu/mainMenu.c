@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
  * Copyright (c) 2022 Xpl0itU <DaThinkingChair@protonmail.com>             *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
@@ -157,11 +157,6 @@ static Screen mainMenuScreen = {
     .data = NULL,
     .dirty = true
 };
-
-Screen *mainMenuScreenGet()
-{
-    return &mainMenuScreen;
-}
 
 void mainMenu()
 {

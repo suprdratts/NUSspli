@@ -22,8 +22,8 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <config.h>
 #include <deinstaller.h>
@@ -320,8 +320,10 @@ static void titleVerCallback(bool ok, const char *text, void *userdata)
 {
     Screen *self = (Screen *)userdata;
     PDData *d = (PDData *)self->data;
-    if(ok && text) strcpy(d->titleVer, text);
-    else d->titleVer[0] = '\0';
+    if(ok && text)
+        strcpy(d->titleVer, text);
+    else
+        d->titleVer[0] = '\0';
     downloadTMD(self);
 }
 
@@ -329,16 +331,18 @@ static void folderNameCallback(bool ok, const char *text, void *userdata)
 {
     Screen *self = (Screen *)userdata;
     PDData *d = (PDData *)self->data;
-    if(ok && text) strcpy(d->folderName, text);
+    if(ok && text)
+        strcpy(d->folderName, text);
 }
 
 static void downloadTitleDone(bool result, void *userdata)
 {
-    PDData *data = (PDData *)userdata;
+    char *name = (char *)userdata;
     enableApd();
     if(result)
-        showFinishedScreen(data->entry->name, data->operation == OPERATION_DOWNLOAD_INSTALL ? FINISHING_OPERATION_INSTALL : FINISHING_OPERATION_DOWNLOAD);
-    screenPop();
+        showFinishedScreen(name, FINISHING_OPERATION_INSTALL); // TODO: check op
+    if(name)
+        MEMFreeToDefaultHeap(name);
 }
 
 static void checkSystemCallback(bool result, void *userdata)
@@ -346,15 +350,39 @@ static void checkSystemCallback(bool result, void *userdata)
     PDData *data = (PDData *)userdata;
     if(result)
     {
+        char *name = MEMAllocFromDefaultHeap(strlen(data->entry->name) + 1);
+        if(name)
+            strcpy(name, data->entry->name);
+
+        TMD *tmd = data->tmd;
+        size_t tmdSize = data->rambuf->size;
+        const TitleEntry *entry = data->entry;
+        char titleVer[33];
+        strcpy(titleVer, data->titleVer);
+        char folderName[FS_MAX_PATH];
+        strcpy(folderName, data->folderName);
+        bool inst = data->operation == OPERATION_DOWNLOAD_INSTALL;
+        NUSDEV dlDev = data->dlDev;
+        bool toUSB = (data->instDev & NUSDEV_USB) != 0;
+        bool keepFiles = data->keepFiles;
+
+        RAMBUF *rb = data->rambuf;
+        data->tmd = NULL;
+        data->rambuf = NULL; // Hand over ownership
+
         disableApd();
-        downloadTitle(data->tmd, data->rambuf->size, data->entry, data->titleVer, data->folderName, data->operation == OPERATION_DOWNLOAD_INSTALL, data->dlDev, data->instDev & NUSDEV_USB, data->keepFiles, NULL, downloadTitleDone, data);
+        screenPop(); // Pop predownload screen
+        downloadTitle(tmd, tmdSize, entry, titleVer, folderName, inst, dlDev, toUSB, keepFiles, NULL, downloadTitleDone, name);
+        MEMFreeToDefaultHeap(tmd);
+        MEMFreeToDefaultHeap(rb);
     }
 }
 
 static void startOpCallback(bool result, void *userdata)
 {
     PDData *data = (PDData *)userdata;
-    if(!result) return;
+    if(!result)
+        return;
 
     checkSystemTitleFromEntry(data->entry, false, checkSystemCallback, data);
 }
@@ -364,8 +392,15 @@ static void deinstallCallback(bool result, void *userdata)
     PDData *data = (PDData *)userdata;
     if(result)
     {
-        deinstall(&data->titleList, data->entry->name, false, false, NULL, NULL);
-        screenPop();
+        char *name = MEMAllocFromDefaultHeap(strlen(data->entry->name) + 1);
+        if(name)
+            strcpy(name, data->entry->name);
+        MCPTitleListType titleList = data->titleList;
+
+        screenPop(); // Pop predownload screen
+        deinstall(&titleList, name, false, false, NULL, NULL);
+        if(name)
+            MEMFreeToDefaultHeap(name);
     }
 }
 
@@ -373,7 +408,8 @@ static void predownloadUpdate(Screen *self)
 {
     PDData *data = (PDData *)self->data;
 
-    if(data->state == 1) return; // Downloading TMD
+    if(data->state == 1)
+        return; // Downloading TMD
 
     if(vpad.trigger & VPAD_BUTTON_B)
     {

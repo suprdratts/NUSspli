@@ -17,10 +17,10 @@
  * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
-#include <screen.h>
 #include <list.h>
-#include <state.h>
 #include <renderer.h>
+#include <screen.h>
+#include <state.h>
 #include <stddef.h>
 
 #pragma GCC diagnostic ignored "-Wundef"

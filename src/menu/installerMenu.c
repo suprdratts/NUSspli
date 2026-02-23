@@ -18,8 +18,8 @@
 
 #include <wut-fixups.h>
 
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <config.h>
 #include <file.h>
@@ -152,9 +152,11 @@ static void drawInstallerMenuFrame(const InstallerData *data)
 
 static void installResultCallback(bool result, void *userdata)
 {
-    const char *nd = (const char *)userdata;
+    char *nd = (char *)userdata;
     if(result)
         showFinishedScreen(nd, FINISHING_OPERATION_INSTALL);
+    if(nd)
+        MEMFreeToDefaultHeap(nd);
 }
 
 static void sysCheckCallback(bool result, void *userdata)
@@ -163,10 +165,22 @@ static void sysCheckCallback(bool result, void *userdata)
     InstallerData *data = (InstallerData *)self->data;
     if(result)
     {
-        const char *nd = data->entry == NULL ? prettyDir(data->dir) : data->entry->name;
-        install(nd, false, data->dev, data->dir, data->toDev & NUSDEV_USB, data->keepFiles, data->tmd, installResultCallback, (void *)nd);
-        data->tmd = NULL;
-        screenPop();
+        const char *name = data->entry == NULL ? prettyDir(data->dir) : data->entry->name;
+        char *nd = MEMAllocFromDefaultHeap(strlen(name) + 1);
+        if(nd)
+            strcpy(nd, name);
+
+        NUSDEV dev = data->dev;
+        char dir[FS_MAX_PATH];
+        strcpy(dir, data->dir);
+        bool toUSB = (data->toDev & NUSDEV_USB) != 0;
+        bool keepFiles = data->keepFiles;
+        TMD *tmd = data->tmd;
+        data->tmd = NULL; // Hand over ownership
+
+        screenPop(); // Pop installer screen
+        install(nd, false, dev, dir, toUSB, keepFiles, tmd, installResultCallback, (void *)nd);
+        MEMFreeToDefaultHeap(tmd);
     }
 }
 

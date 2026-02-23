@@ -20,8 +20,6 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include <crypto.h>
 #include <deinstaller.h>
@@ -45,7 +43,6 @@
 #include <coreinit/mcp.h>
 #include <coreinit/memory.h>
 #include <coreinit/time.h>
-#include <coreinit/memdefaultheap.h>
 #pragma GCC diagnostic pop
 
 #define IMPORTDIR_USB1 (NUSDIR_USB1 "usr/import/")
@@ -93,193 +90,309 @@ static void cleanupCancelledInstallation(NUSDEV dev, const char *path, bool toUs
 
 typedef struct
 {
-    char *game;
+    char game[256];
     bool hasDeps;
     NUSDEV dev;
-    char *path;
+    char path[FS_MAX_PATH];
     bool toUsb;
     bool keepFiles;
     TMD *tmd;
     ResultCallback callback;
     void *userdata;
-    int state;
-    McpData mcp_data;
-    NO_INTRO_DATA *noIntro;
+
+    // State
     uint64_t size;
+    NO_INTRO_DATA *noIntro;
+    McpData mcp_data;
 } InstallData;
 
-static void installDoneCallback(bool result, void *userdata)
+static void installProgressCallback(bool result, void *userdata)
 {
     InstallData *data = (InstallData *)userdata;
-    ResultCallback cb = data->callback;
-    void *ud = data->userdata;
-    screenPop(); // Pop install screen
-    if(cb) cb(result, ud);
-}
-
-static void deinstallDone(bool result, void *userdata)
-{
-    (void)result;
-    InstallData *data = (InstallData *)userdata;
-    data->state = 1; // Proceed to installation
-}
-
-static void noIntroDone(NO_INTRO_DATA *noIntro, void *userdata)
-{
-    InstallData *data = (InstallData *)userdata;
-    data->noIntro = noIntro;
-    data->state = 11; // Proceed after no-intro
-}
-
-static void installUpdate(Screen *self)
-{
-    InstallData *data = (InstallData *)self->data;
-
-    switch(data->state)
-    {
-        case 0:
-        {
-            if(data->tmd != NULL)
-            {
-                MCPTitleListType titleEntry __attribute__((__aligned__(0x40)));
-                if(MCP_GetTitleInfo(mcpHandle, data->tmd->tid, &titleEntry) == 0)
-                {
-                    data->state = 10; // Waiting for deinstall
-                    deinstall(&titleEntry, data->game, false, true, deinstallDone, data);
-                    return;
-                }
-            }
-            data->state = 1;
-            self->dirty = true;
-            break;
-        }
-        case 1:
-        {
-            flushIOQueue();
-            char tmpPath[FS_MAX_PATH];
-            size_t s = strlen(data->path);
-            strcpy(tmpPath, data->path);
-            strcpy(tmpPath + s, "title.tmd");
-            if(!fileExists(tmpPath))
-            {
-                data->state = 10; // Use 10 as generic wait
-                transformNoIntro(data->path, noIntroDone, data);
-                return;
-            }
-            data->state = 11;
-            break;
-        }
-        case 11:
-        {
-            if(data->tmd == NULL)
-            {
-                data->tmd = getTmd(data->path, false);
-                if(data->tmd == NULL)
-                {
-                    showErrorFrame(localise("No title.tmd found!"));
-                    screenPop();
-                    if(data->callback) data->callback(false, data->userdata);
-                    return;
-                }
-            }
-            data->size = 0;
-            for(uint16_t i = 0; i < data->tmd->num_contents; ++i)
-                data->size += data->tmd->contents[i].size;
-            if(!checkFreeSpace(data->toUsb ? getUSB() : NUSDEV_MLC, data->size))
-            {
-                screenPop();
-                if(data->callback) data->callback(false, data->userdata);
-                return;
-            }
-
-            MCPInstallTitleInfo info __attribute__((__aligned__(0x40)));
-            MCPError err = MCP_InstallGetInfo(mcpHandle, data->path, (MCPInstallInfo *)&info);
-            if(err != 0)
-            {
-                if(data->noIntro) revertNoIntro(data->noIntro);
-                showErrorFrame(localise("Error getting info from MCP"));
-                screenPop();
-                if(data->callback) data->callback(false, data->userdata);
-                return;
-            }
-            MCPInstallTarget target = data->toUsb ? MCP_INSTALL_TARGET_USB : MCP_INSTALL_TARGET_MLC;
-            err = MCP_InstallSetTargetDevice(mcpHandle, target);
-            if(err == 0 && data->toUsb && getUSB() == NUSDEV_USB02)
-                 err = MCP_InstallSetTargetUsb(mcpHandle, ++target);
-
-            if(err != 0)
-            {
-                if(data->noIntro) revertNoIntro(data->noIntro);
-                showErrorFrame(localise("Error opening target device"));
-                screenPop();
-                if(data->callback) data->callback(false, data->userdata);
-                return;
-            }
-            glueMcpData(&info, &data->mcp_data);
-            disableShutdown();
-            err = MCP_InstallTitleAsync(mcpHandle, data->path, &info);
-            if(err != 0)
-            {
-                enableShutdown();
-                if(data->noIntro) revertNoIntro(data->noIntro);
-                showErrorFrame(localise("Error starting installation"));
-                screenPop();
-                if(data->callback) data->callback(false, data->userdata);
-                return;
-            }
-            data->state = 2;
-            showMcpProgress(&data->mcp_data, data->game, true, installDoneCallback, data);
-            break;
-        }
-        case 2:
-        case 10:
-        {
-            break;
-        }
-    }
-}
-
-static void installDraw(Screen *self)
-{
-    InstallData *data = (InstallData *)self->data;
-    startNewFrame();
     char *toScreen = getToFrameBuffer();
-    strcpy(toScreen, localise("Installing"));
-    strcat(toScreen, " ");
-    strcat(toScreen, data->game);
-    textToFrame(0, 0, toScreen);
-    if(data->state == 1 || data->state == 11)
+    enableShutdown();
+
+    if(data->mcp_data.err != 0)
     {
-        barToFrame(1, 0, 40, 0.0f);
-        textToFrame(1, 41, localise("Preparing..."));
+        if(data->keepFiles && data->noIntro != NULL)
+            revertNoIntro(data->noIntro);
+
+        debugPrintf("Installation failed with result: %#010x", data->mcp_data.err);
+        strcpy(toScreen, localise("Installation failed!"));
+        strcat(toScreen, "\n\n");
+        switch(data->mcp_data.err)
+        {
+            case CUSTOM_MCP_ERROR_CANCELLED:
+                cleanupCancelledInstallation(data->dev, data->path, data->toUsb, data->keepFiles);
+                goto end;
+            case CUSTOM_MCP_ERROR_EOM:
+                goto end;
+            case 0xFFFCFFE9:
+                if(data->hasDeps)
+                {
+                    strcat(toScreen, "Install the main game to the same storage medium first");
+                    if(data->toUsb)
+                    {
+                        strcat(toScreen, "\n");
+                        strcat(toScreen, localise("Also make sure there is no error with the USB drive"));
+                    }
+                }
+                else if(data->toUsb)
+                    strcat(toScreen, localise("Possible USB error"));
+                break;
+            case 0xFFFBF446:
+            case 0xFFFBF43F:
+                strcat(toScreen, localise("Possible missing or bad title.tik file"));
+                break;
+            case 0xFFFBF440:
+                strcat(toScreen, localise("Missing title.cert file"));
+                break;
+            case 0xFFFBF441:
+                strcat(toScreen, localise("Possible incorrect console for DLC title.tik file"));
+                break;
+            case 0xFFFBF442:
+                strcat(toScreen, localise("Invalid title.cert file"));
+                break;
+            case 0xFFFCFFE4:
+                strcat(toScreen, localise("Not enough free space on target device"));
+                break;
+            case 0xFFFFF825:
+            case 0xFFFFF82E:
+                strcat(toScreen, localise("Files might be corrupt or bad storage medium.\nTry redownloading files or reformat/replace target device"));
+                break;
+            default:
+                if((data->mcp_data.err & 0xFFFF0000) == 0xFFFB0000)
+                {
+                    if(data->dev & NUSDEV_USB)
+                    {
+                        strcat(toScreen, localise("Possible USB failure. Check your drives power source."));
+                        strcat(toScreen, "\n");
+                    }
+                    strcat(toScreen, localise("Files might be corrupt"));
+                }
+                else
+                    sprintf(toScreen + strlen(toScreen), "%s: %#010x", localise("Unknown Error"), data->mcp_data.err);
+        }
+
+        addToScreenLog("Installation failed!");
+        showErrorFrame(toScreen);
+        result = false;
     }
-    drawFrame();
+    else
+    {
+        claimSpace(data->toUsb ? getUSB() : NUSDEV_MLC, data->size);
+
+        if(data->keepFiles && data->noIntro != NULL)
+            revertNoIntro(data->noIntro);
+
+        addToScreenLog("Installation finished!");
+
+        if(!data->keepFiles && data->dev == NUSDEV_SD)
+            removeDirectory(data->path);
+        result = true;
+    }
+
+end:
+    if(data->callback)
+        data->callback(result, data->userdata);
+    if(data->tmd)
+        MEMFreeToDefaultHeap(data->tmd);
+    MEMFreeToDefaultHeap(data);
 }
 
-static void installExit(Screen *self)
+static void deinstallDone(bool res, void *ud)
 {
-    InstallData *data = (InstallData *)self->data;
-    if(data)
-    {
-        if(data->game) MEMFreeToDefaultHeap(data->game);
-        if(data->path) MEMFreeToDefaultHeap(data->path);
-        MEMFreeToDefaultHeap(data);
-    }
-    MEMFreeToDefaultHeap(self);
+    (void)res;
+    (void)ud;
 }
 
 void install(const char *game, bool hasDeps, NUSDEV dev, const char *path, bool toUsb, bool keepFiles, const TMD *tmd, ResultCallback callback, void *userdata)
 {
-    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
-    if(self == NULL) return;
     InstallData *data = MEMAllocFromDefaultHeap(sizeof(InstallData));
-    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+    if(data == NULL)
+    {
+        if(callback)
+            callback(false, userdata);
+        return;
+    }
+
     OSBlockSet(data, 0, sizeof(InstallData));
-    data->game = MEMAllocFromDefaultHeap(strlen(game) + 1); if(data->game) strcpy(data->game, game);
-    data->hasDeps = hasDeps; data->dev = dev;
-    data->path = MEMAllocFromDefaultHeap(strlen(path) + 1); if(data->path) strcpy(data->path, path);
-    data->toUsb = toUsb; data->keepFiles = keepFiles; data->tmd = (TMD *)tmd;
-    data->callback = callback; data->userdata = userdata; data->state = 0;
-    self->onUpdate = installUpdate; self->onDraw = installDraw; self->onExit = installExit; self->data = data; self->dirty = true;
-    screenPush(self);
+    strncpy(data->game, game, 255);
+    data->hasDeps = hasDeps;
+    data->dev = dev;
+    strncpy(data->path, path, FS_MAX_PATH - 1);
+    data->toUsb = toUsb;
+    data->keepFiles = keepFiles;
+    if(tmd)
+    {
+        size_t tmdSize = sizeof(TMD) + (sizeof(TMD_CONTENT) * tmd->num_contents);
+        data->tmd = (TMD *)MEMAllocFromDefaultHeap(tmdSize);
+        memcpy(data->tmd, tmd, tmdSize);
+    }
+    data->callback = callback;
+    data->userdata = userdata;
+
+    if(data->tmd != NULL)
+    {
+        MCPTitleListType titleEntry __attribute__((__aligned__(0x40)));
+        if(MCP_GetTitleInfo(mcpHandle, data->tmd->tid, &titleEntry) == 0)
+            deinstall(&titleEntry, game, false, true, deinstallDone, NULL);
+    }
+
+    startNewFrame();
+    char *toScreen = getToFrameBuffer();
+    strcpy(toScreen, localise("Installing"));
+    strcat(toScreen, " ");
+    strcat(toScreen, game);
+    textToFrame(0, 0, toScreen);
+    barToFrame(1, 0, 40, 0.0f);
+    textToFrame(1, 41, localise("Preparing. This might take some time. Please be patient."));
+    writeScreenLog(2);
+    drawFrame();
+    showFrame();
+    flushIOQueue();
+
+    TMD *tmd2;
+    if(data->tmd != NULL)
+        tmd2 = data->tmd;
+    else
+    {
+        tmd2 = getTmd(path, false);
+        if(tmd2 == NULL)
+        {
+            sprintf(toScreen, "%s \"%s\"", localise("No title.tmd found at"), path);
+            goto error;
+        }
+    }
+
+    data->size = 0;
+    for(uint16_t i = 0; i < tmd2->num_contents; ++i)
+        data->size += tmd2->contents[i].size;
+
+    if(!checkFreeSpace(toUsb ? getUSB() : NUSDEV_MLC, data->size))
+    {
+        if(data->tmd == NULL)
+            MEMFreeToDefaultHeap(tmd2);
+        goto error_silent;
+    }
+
+    char *tmpPath = getStaticPathBuffer(1);
+    size_t s = strlen(path);
+    OSBlockMove(tmpPath, path, s, false);
+    OSBlockMove(tmpPath + s, "title.tmd", sizeof("title.tmd"), false);
+    if(!fileExists(tmpPath))
+    {
+        data->noIntro = transformNoIntro(path);
+        if(data->noIntro == NULL)
+        {
+            strcpy(toScreen, localise("Error transforming no-image set"));
+            if(data->tmd == NULL)
+                MEMFreeToDefaultHeap(tmd2);
+            goto error;
+        }
+    }
+
+    if(isDLC(tmd2->tid))
+    {
+        OSBlockMove(tmpPath + s, "title.tik", sizeof("title.tik"), false);
+        TICKET *tik;
+        readFile(tmpPath, (void **)&tik);
+        if(tik != NULL && hasMagicHeader(tik) && strcmp(tik->header.app, "NUSspli") == 0)
+        {
+            char *needle = strstr(tik->header.app_version, ".");
+            if(needle)
+            {
+                *needle = '\0';
+                if(atoi(tik->header.app_version) == 1)
+                {
+                    char *betaNeedle = strstr(++needle, "-");
+                    if(betaNeedle)
+                        *betaNeedle = '\0';
+                    int minor = atoi(needle);
+                    if(minor >= 113 && minor < 125)
+                    {
+                        if(generateTik(tmpPath, tmd2))
+                        {
+                            if(data->noIntro != NULL)
+                                revertNoIntro(data->noIntro);
+                            if(data->tmd == NULL)
+                                MEMFreeToDefaultHeap(tmd2);
+                            install(game, hasDeps, dev, path, toUsb, keepFiles, tmd, callback, userdata);
+                            MEMFreeToDefaultHeap(data);
+                            return;
+                        }
+                    }
+                }
+            }
+            MEMFreeToDefaultHeap(tik);
+        }
+    }
+
+    MCPInstallTitleInfo info __attribute__((__aligned__(0x40)));
+    data->mcp_data.err = MCP_InstallGetInfo(mcpHandle, path, (MCPInstallInfo *)&info);
+    if(data->mcp_data.err != 0)
+    {
+        if(data->noIntro != NULL)
+            revertNoIntro(data->noIntro);
+        switch(data->mcp_data.err)
+        {
+            case 0xfffbf3e2:
+                sprintf(toScreen, "%s \"%s\"", localise("No title.tmd found at"), path);
+                break;
+            case 0xfffbfc17:
+                sprintf(toScreen, "%s \"%s\"", localise("Internal error installing"), path);
+                break;
+            default:
+                sprintf(toScreen, "%s \"%s\" %s: %#010x", localise("Error getting info for"), path, localise("from MCP"), data->mcp_data.err);
+        }
+        if(data->tmd == NULL)
+            MEMFreeToDefaultHeap(tmd2);
+        goto error;
+    }
+
+    MCPInstallTarget target = toUsb ? MCP_INSTALL_TARGET_USB : MCP_INSTALL_TARGET_MLC;
+    data->mcp_data.err = MCP_InstallSetTargetDevice(mcpHandle, target);
+    if(data->mcp_data.err == 0 && toUsb && getUSB() == NUSDEV_USB02)
+        data->mcp_data.err = MCP_InstallSetTargetUsb(mcpHandle, ++target);
+
+    if(data->mcp_data.err != 0)
+    {
+        if(data->noIntro != NULL)
+            revertNoIntro(data->noIntro);
+        strcpy(toScreen, localise(toUsb ? "Error opening USB device" : "Error opening internal memory"));
+        if(data->tmd == NULL)
+            MEMFreeToDefaultHeap(tmd2);
+        goto error;
+    }
+
+    glueMcpData(&info, &data->mcp_data);
+    disableShutdown();
+    data->mcp_data.err = MCP_InstallTitleAsync(mcpHandle, path, &info);
+    if(data->mcp_data.err != 0)
+    {
+        if(data->noIntro != NULL)
+            revertNoIntro(data->noIntro);
+        sprintf(toScreen, "%s \"%s\": %#010x", localise("Error starting async installation of"), path, data->mcp_data.err);
+        enableShutdown();
+        if(data->tmd == NULL)
+            MEMFreeToDefaultHeap(tmd2);
+        goto error;
+    }
+
+    if(data->tmd == NULL)
+        MEMFreeToDefaultHeap(tmd2);
+
+    showMcpProgress(&data->mcp_data, game, true, installProgressCallback, data);
+    return;
+
+error:
+    debugPrintf(toScreen);
+    addToScreenLog("Installation failed!");
+    showErrorFrame(toScreen);
+error_silent:
+    if(callback)
+        callback(false, userdata);
+    if(data->tmd)
+        MEMFreeToDefaultHeap(data->tmd);
+    MEMFreeToDefaultHeap(data);
 }

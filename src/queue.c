@@ -94,7 +94,8 @@ static void queueItemDone(bool result, void *userdata)
     if(!result)
     {
         screenPop();
-        if(data->callback) data->callback(false, data->userdata);
+        if(data->callback)
+            data->callback(false, data->userdata);
         return;
     }
     data->state = 1; // Process next item
@@ -109,7 +110,8 @@ static void processQueueUpdate(Screen *self)
     {
         enableApd();
         screenPop();
-        if(data->callback) data->callback(true, data->userdata);
+        if(data->callback)
+            data->callback(true, data->userdata);
         return;
     }
 
@@ -133,7 +135,8 @@ static void processQueueUpdate(Screen *self)
                 removeFQ(title);
             }
             break;
-        default: break;
+        default:
+            break;
     }
 }
 
@@ -146,18 +149,22 @@ void processQueue(ResultCallback callback, void *userdata)
 
     forEachListEntry(titleQueue, title)
     {
-        if(title->operation & OPERATION_DOWNLOAD) qd.packages++;
+        if(title->operation & OPERATION_DOWNLOAD)
+            qd.packages++;
         for(uint16_t i = 0; i < title->tmd->num_contents; ++i)
         {
-            if(title->operation & OPERATION_INSTALL) sizes[title->toUSB ? 0 : 2] += title->tmd->contents[i].size;
+            if(title->operation & OPERATION_INSTALL)
+                sizes[title->toUSB ? 0 : 2] += title->tmd->contents[i].size;
             if(title->operation & OPERATION_DOWNLOAD)
             {
                 qd.dlSize += title->tmd->contents[i].size;
-                if(title->tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED) qd.dlSize += getH3size(title->tmd->contents[i].size);
+                if(title->tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED)
+                    qd.dlSize += getH3size(title->tmd->contents[i].size);
                 if(title->keepFiles)
                 {
                     int j = title->dlDev & NUSDEV_USB ? 0 : (title->dlDev & NUSDEV_SD ? 1 : 2);
-                    if(title->tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED) sizes[j] += getH3size(title->tmd->contents[i].size);
+                    if(title->tmd->contents[i].type & TMD_CONTENT_TYPE_HASHED)
+                        sizes[j] += getH3size(title->tmd->contents[i].size);
                     sizes[j] += title->tmd->contents[i].size;
                 }
             }
@@ -169,14 +176,24 @@ void processQueue(ResultCallback callback, void *userdata)
         if(sizes[i] != 0)
         {
             NUSDEV toCheck = (i == 0) ? getUSB() : (i == 1 ? NUSDEV_SD : NUSDEV_MLC);
-            if(!checkFreeSpace(toCheck, sizes[i])) { if(callback) callback(false, userdata); return; }
+            if(!checkFreeSpace(toCheck, sizes[i]))
+            {
+                if(callback)
+                    callback(false, userdata);
+                return;
+            }
         }
     }
 
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
-    if(self == NULL) return;
+    if(self == NULL)
+        return;
     ProcessQueueData *data = MEMAllocFromDefaultHeap(sizeof(ProcessQueueData));
-    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+    if(data == NULL)
+    {
+        MEMFreeToDefaultHeap(self);
+        return;
+    }
 
     data->queueData = qd;
     data->callback = callback;

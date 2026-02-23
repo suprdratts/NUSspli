@@ -21,8 +21,8 @@
 
 #include <ctype.h>
 #include <stdbool.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <deinstaller.h>
 #include <file.h>
@@ -84,17 +84,25 @@ typedef struct
 static volatile INST_META *getInstalledTitle(ITBData *data, size_t index, bool block)
 {
     volatile INST_META *title = data->installedTitles + index;
-    if(title->ready) return title;
-    if(block) spinLock(title->lock);
-    else if(!spinTryLock(title->lock)) return NULL;
+    if(title->ready)
+        return title;
+    if(block)
+        spinLock(title->lock);
+    else if(!spinTryLock(title->lock))
+        return NULL;
     if(!title->ready)
     {
         MCPTitleListType *list = data->ititleEntries + index;
         switch(list->indexedDevice[0])
         {
-            case 'u': title->dt = DEVICE_TYPE_USB; break;
-            case 'm': title->dt = DEVICE_TYPE_NAND; break;
-            default: title->dt = DEVICE_TYPE_UNKNOWN;
+            case 'u':
+                title->dt = DEVICE_TYPE_USB;
+                break;
+            case 'm':
+                title->dt = DEVICE_TYPE_NAND;
+                break;
+            default:
+                title->dt = DEVICE_TYPE_UNKNOWN;
         }
         const TitleEntry *e = getTitleEntryByTid(list->titleId);
         if(e)
@@ -114,7 +122,8 @@ static volatile INST_META *getInstalledTitle(ITBData *data, size_t index, bool b
                 title->name[MAX_ITITLEBROWSER_TITLE_LENGTH - 1] = '\0';
                 title->region = meta.region;
             }
-            else hex(list->titleId, 16, (char *)title->name);
+            else
+                hex(list->titleId, 16, (char *)title->name);
         }
         title->ready = true;
     }
@@ -124,14 +133,19 @@ static volatile INST_META *getInstalledTitle(ITBData *data, size_t index, bool b
 
 static int asyncTitleLoader(int argc, const char **argv)
 {
-    (void)argc; ITBData *data = (ITBData *)argv;
-    size_t min = MAX_ITITLEBROWSER_LINES >> 1; size_t max = data->ititleEntrySize - 1;
+    (void)argc;
+    ITBData *data = (ITBData *)argv;
+    size_t min = MAX_ITITLEBROWSER_LINES >> 1;
+    size_t max = data->ititleEntrySize - 1;
     while(min <= max && AppRunning(false))
     {
         size_t cur;
-        if(data->asyncState == ASYNC_STATE_FWD) cur = min++;
-        else if(data->asyncState == ASYNC_STATE_BKWD) cur = max--;
-        else break;
+        if(data->asyncState == ASYNC_STATE_FWD)
+            cur = min++;
+        else if(data->asyncState == ASYNC_STATE_BKWD)
+            cur = max--;
+        else
+            break;
         getInstalledTitle(data, cur, false);
     }
     return 0;
@@ -149,19 +163,32 @@ static void drawITBMenuFrame(ITBData *data)
     strcat(toFrame, localise(BUTTON_B " to return"));
     textToFrame(MAX_LINES - 1, ALIGNED_CENTER, toFrame);
     size_t max = data->ititleEntrySize - data->pos;
-    if(max > MAX_ITITLEBROWSER_LINES) max = MAX_ITITLEBROWSER_LINES;
+    if(max > MAX_ITITLEBROWSER_LINES)
+        max = MAX_ITITLEBROWSER_LINES;
     for(size_t i = 0, l = 1; i < max; ++i, ++l)
     {
         volatile INST_META *im = getInstalledTitle(data, data->pos + i, true);
-        if(im->isDlc) strcpy(toFrame, "[DLC] ");
-        else if(im->isUpdate) strcpy(toFrame, "[UPD] ");
-        else toFrame[0] = '\0';
-        if(data->cursor == i) arrowToFrame(l, 1);
-        deviceToFrame(l, 4, im->dt); flagToFrame(l, 7, im->region);
+        if(im->isDlc)
+            strcpy(toFrame, "[DLC] ");
+        else if(im->isUpdate)
+            strcpy(toFrame, "[UPD] ");
+        else
+            toFrame[0] = '\0';
+        if(data->cursor == i)
+            arrowToFrame(l, 1);
+        deviceToFrame(l, 4, im->dt);
+        flagToFrame(l, 7, im->region);
         strcat(toFrame, (const char *)im->name);
         textToFrameCut(l, 10, toFrame, (SCREEN_WIDTH - (FONT_SIZE << 1)) - (getSpaceWidth() * 11));
     }
     drawFrame();
+}
+
+static void ititleBrowserRefreshCallback(bool result, void *userdata)
+{
+    (void)result;
+    (void)userdata;
+    ititleBrowserMenu();
 }
 
 static void deinstallConfirmCallback(bool result, void *userdata)
@@ -171,7 +198,14 @@ static void deinstallConfirmCallback(bool result, void *userdata)
     {
         volatile INST_META *im = data->installedTitles + data->cursor + data->pos;
         MCPTitleListType *entry = data->ititleEntries + data->cursor + data->pos;
-        deinstall(entry, (const char *)im->name, false, false, NULL, NULL);
+
+        MCPTitleListType entryCopy;
+        memcpy(&entryCopy, entry, sizeof(MCPTitleListType));
+        char nameCopy[256];
+        strncpy(nameCopy, (const char *)im->name, 255);
+
+        screenPop();
+        deinstall(&entryCopy, nameCopy, false, false, ititleBrowserRefreshCallback, NULL);
     }
 }
 
@@ -179,7 +213,12 @@ static void ititleBrowserUpdate(Screen *self)
 {
     ITBData *data = (ITBData *)self->data;
     bool mov = data->ititleEntrySize > MAX_ITITLEBROWSER_LINES;
-    if(vpad.trigger & VPAD_BUTTON_PLUS) { launchTitle(data->ititleEntries + data->cursor + data->pos); screenPop(); return; }
+    if(vpad.trigger & VPAD_BUTTON_PLUS)
+    {
+        launchTitle(data->ititleEntries + data->cursor + data->pos);
+        screenPop();
+        return;
+    }
     if(vpad.trigger & VPAD_BUTTON_MINUS)
     {
         volatile INST_META *im = data->installedTitles + data->cursor + data->pos;
@@ -188,33 +227,62 @@ static void ititleBrowserUpdate(Screen *self)
         showConfirmation(toFrame, deinstallConfirmCallback, data);
         return;
     }
-    if(vpad.trigger & VPAD_BUTTON_B) { screenPop(); return; }
+    if(vpad.trigger & VPAD_BUTTON_B)
+    {
+        screenPop();
+        return;
+    }
     if(vpad.hold & VPAD_BUTTON_UP)
     {
-        if(data->oldHold != VPAD_BUTTON_UP) { data->asyncState = ASYNC_STATE_BKWD; data->oldHold = VPAD_BUTTON_UP; data->frameCount = 30; }
-        else if(data->frameCount) data->frameCount--;
+        if(data->oldHold != VPAD_BUTTON_UP)
+        {
+            data->asyncState = ASYNC_STATE_BKWD;
+            data->oldHold = VPAD_BUTTON_UP;
+            data->frameCount = 30;
+        }
+        else if(data->frameCount)
+            data->frameCount--;
         if(data->frameCount == 0 || data->oldHold != VPAD_BUTTON_UP)
         {
-            if(data->cursor) data->cursor--;
-            else if(mov && data->pos) data->pos--;
-            else if(!mov) data->cursor = data->ititleEntrySize - 1;
-            else { data->cursor = MAX_ITITLEBROWSER_LINES - 1; data->pos = data->ititleEntrySize - MAX_ITITLEBROWSER_LINES; }
+            if(data->cursor)
+                data->cursor--;
+            else if(mov && data->pos)
+                data->pos--;
+            else if(!mov)
+                data->cursor = data->ititleEntrySize - 1;
+            else
+            {
+                data->cursor = MAX_ITITLEBROWSER_LINES - 1;
+                data->pos = data->ititleEntrySize - MAX_ITITLEBROWSER_LINES;
+            }
             self->dirty = true;
         }
     }
     else if(vpad.hold & VPAD_BUTTON_DOWN)
     {
-        if(data->oldHold != VPAD_BUTTON_DOWN) { data->asyncState = ASYNC_STATE_FWD; data->oldHold = VPAD_BUTTON_DOWN; data->frameCount = 30; }
-        else if(data->frameCount) data->frameCount--;
+        if(data->oldHold != VPAD_BUTTON_DOWN)
+        {
+            data->asyncState = ASYNC_STATE_FWD;
+            data->oldHold = VPAD_BUTTON_DOWN;
+            data->frameCount = 30;
+        }
+        else if(data->frameCount)
+            data->frameCount--;
         if(data->frameCount == 0 || data->oldHold != VPAD_BUTTON_DOWN)
         {
-            if(data->cursor + data->pos >= data->ititleEntrySize - 1) { data->cursor = data->pos = 0; }
-            else if(data->cursor < MAX_ITITLEBROWSER_LINES - 1) data->cursor++;
-            else data->pos++;
+            if(data->cursor + data->pos >= data->ititleEntrySize - 1)
+            {
+                data->cursor = data->pos = 0;
+            }
+            else if(data->cursor < MAX_ITITLEBROWSER_LINES - 1)
+                data->cursor++;
+            else
+                data->pos++;
             self->dirty = true;
         }
     }
-    if(data->oldHold && !(vpad.hold & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN))) data->oldHold = 0;
+    if(data->oldHold && !(vpad.hold & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN)))
+        data->oldHold = 0;
 }
 
 static void ititleBrowserDraw(Screen *self) { drawITBMenuFrame((ITBData *)self->data); }
@@ -224,9 +292,12 @@ static void ititleBrowserExit(Screen *self)
     if(data)
     {
         data->asyncState = ASYNC_STATE_EXIT;
-        if(data->bgt) stopThread(data->bgt, NULL);
-        if(data->ititleEntries) MEMFreeToDefaultHeap(data->ititleEntries);
-        if(data->installedTitles) MEMFreeToDefaultHeap(data->installedTitles);
+        if(data->bgt)
+            stopThread(data->bgt, NULL);
+        if(data->ititleEntries)
+            MEMFreeToDefaultHeap(data->ititleEntries);
+        if(data->installedTitles)
+            MEMFreeToDefaultHeap(data->installedTitles);
         MEMFreeToDefaultHeap(data);
     }
     MEMFreeToDefaultHeap(self);
@@ -235,7 +306,8 @@ static void ititleBrowserExit(Screen *self)
 Screen *ititleBrowserScreenGet()
 {
     int32_t r = MCP_TitleCount(mcpHandle);
-    if(r <= 0) return NULL;
+    if(r <= 0)
+        return NULL;
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
     ITBData *data = MEMAllocFromDefaultHeap(sizeof(ITBData));
     OSBlockSet(data, 0, sizeof(ITBData));
@@ -244,15 +316,24 @@ Screen *ititleBrowserScreenGet()
     MCP_TitleList(mcpHandle, &s, data->ititleEntries, s);
     data->ititleEntrySize = s;
     data->installedTitles = (INST_META *)MEMAllocFromDefaultHeap(s * sizeof(INST_META));
-    for(size_t i = 0; i < s; ++i) { spinCreateLock(data->installedTitles[i].lock, SPINLOCK_FREE); data->installedTitles[i].ready = false; }
+    for(size_t i = 0; i < s; ++i)
+    {
+        spinCreateLock(data->installedTitles[i].lock, SPINLOCK_FREE);
+        data->installedTitles[i].ready = false;
+    }
     data->asyncState = ASYNC_STATE_FWD;
     data->bgt = startThread("NUSspli title loader", THREAD_PRIORITY_MEDIUM, STACKSIZE_MEDIUM, asyncTitleLoader, 0, (const char **)data, OS_THREAD_ATTRIB_AFFINITY_CPU0);
-    self->onUpdate = ititleBrowserUpdate; self->onDraw = ititleBrowserDraw; self->onExit = ititleBrowserExit; self->data = data; self->dirty = true;
+    self->onUpdate = ititleBrowserUpdate;
+    self->onDraw = ititleBrowserDraw;
+    self->onExit = ititleBrowserExit;
+    self->data = data;
+    self->dirty = true;
     return self;
 }
 
 void ititleBrowserMenu()
 {
     Screen *s = ititleBrowserScreenGet();
-    if(s) screenPush(s);
+    if(s)
+        screenPush(s);
 }

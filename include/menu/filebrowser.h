@@ -19,9 +19,9 @@
 
 #pragma once
 
-#include <wut-fixups.h>
 #include <screen.h>
 #include <stdbool.h>
+#include <wut-fixups.h>
 
 #ifdef __cplusplus
 extern "C"

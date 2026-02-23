@@ -33,8 +33,8 @@
 #include <state.h>
 
 #pragma GCC diagnostic ignored "-Wundef"
-#include <coreinit/memory.h>
 #include <coreinit/memdefaultheap.h>
+#include <coreinit/memory.h>
 #pragma GCC diagnostic pop
 
 #define MAX_ENTRIES (MAX_LINES - 4)
@@ -263,8 +263,8 @@ static void queueUpdate(Screen *self)
 
     if(vpad.trigger & VPAD_BUTTON_PLUS)
     {
-        processQueue(queueProcessedCallback, NULL);
         screenPop();
+        processQueue(queueProcessedCallback, NULL);
         return;
     }
 
@@ -329,13 +329,9 @@ Screen *queueScreenGet()
     return self;
 }
 
-bool queueMenu()
+void queueMenu()
 {
     Screen *s = queueScreenGet();
     if(s)
-    {
         screenPush(s);
-        return true;
-    }
-    return false;
 }

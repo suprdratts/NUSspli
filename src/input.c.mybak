@@ -1,0 +1,287 @@
+/***************************************************************************
+ * This file is part of NUSspli.                                           *
+ * Copyright (c) 2019-2020 Pokes303                                        *
+ * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
+ *                                                                         *
+ * This program is free software; you can redistribute it and/or modify    *
+ * it under the terms of the GNU General Public License as published by    *
+ * the Free Software Foundation; either version 3 of the License, or       *
+ * (at your option) any later version.                                     *
+ *                                                                         *
+ * This program is distributed in the hope that it will be useful,         *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of          *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the           *
+ * GNU General Public License for more details.                            *
+ *                                                                         *
+ * You should have received a copy of the GNU General Public License along *
+ * with this program; if not, If not, see <http://www.gnu.org/licenses/>.  *
+ ***************************************************************************/
+
+#include <wut-fixups.h>
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+
+#include <cfw.h>
+#include <config.h>
+#include <input.h>
+#include <localisation.h>
+#include <osdefs.h>
+#include <renderer.h>
+#include <screen.h>
+#include <state.h>
+#include <utils.h>
+
+#pragma GCC diagnostic ignored "-Wundef"
+#include <coreinit/cache.h>
+#include <coreinit/memdefaultheap.h>
+#include <coreinit/memory.h>
+#include <coreinit/thread.h>
+#include <nn/swkbd.h>
+#include <padscore/kpad.h>
+#pragma GCC diagnostic pop
+
+VPADStatus vpad;
+
+bool SWKBD_Init()
+{
+    nn_swkbd_init_arg swkbdArg;
+    nn_swkbd_get_default_init_arg(&swkbdArg);
+    return nn_swkbd_init(&swkbdArg);
+}
+
+void SWKBD_Shutdown()
+{
+    nn_swkbd_finish();
+}
+
+void readInput()
+{
+    VPADReadError verr;
+    vpad.trigger = 0;
+    vpad.release = 0;
+    uint32_t hold = vpad.hold;
+    VPADRead(VPAD_CHAN_0, &vpad, 1, &verr);
+
+    if(verr == VPAD_READ_SUCCESS)
+    {
+        vpad.hold &= (VPAD_BUTTON_A | VPAD_BUTTON_B | VPAD_BUTTON_X | VPAD_BUTTON_Y | VPAD_BUTTON_STICK_R | VPAD_BUTTON_STICK_L | VPAD_BUTTON_LEFT | VPAD_BUTTON_RIGHT | VPAD_BUTTON_UP | VPAD_BUTTON_DOWN | VPAD_BUTTON_PLUS | VPAD_BUTTON_MINUS | VPAD_BUTTON_ZR | VPAD_BUTTON_ZL | VPAD_BUTTON_R | VPAD_BUTTON_L | VPAD_BUTTON_HOME | VPAD_BUTTON_SYNC | VPAD_BUTTON_TV | VPAD_BUTTON_POWER);
+        vpad.trigger = vpad.hold & ~hold;
+        vpad.release = ~vpad.hold & hold;
+    }
+    else
+        vpad.hold = 0;
+
+    KPADStatus kpad[4];
+    KPADReadError kerr;
+    uint32_t kh;
+    for(int i = 0; i < 4; ++i)
+    {
+        KPADReadEx((KPADChan)i, &kpad[i], 1, &kerr);
+        if(kerr == KPAD_READ_SUCCESS)
+        {
+            kh = kpad[i].hold;
+            if(kpad[i].extensionType == WPAD_EXT_CORE || kpad[i].extensionType == WPAD_EXT_NUNCHUK)
+                kh |= kpad[i].classic.hold; // classic.hold and wii.hold are in the same union
+
+            vpad.hold |= kh;
+            vpad.trigger |= kpad[i].trigger;
+            if(kpad[i].extensionType == WPAD_EXT_CORE || kpad[i].extensionType == WPAD_EXT_NUNCHUK)
+                vpad.trigger |= kpad[i].classic.trigger;
+
+            vpad.release |= kpad[i].release;
+            if(kpad[i].extensionType == WPAD_EXT_CORE || kpad[i].extensionType == WPAD_EXT_NUNCHUK)
+                vpad.release |= kpad[i].classic.release;
+        }
+    }
+}
+
+typedef struct
+{
+    KeyboardLayout layout;
+    KeyboardType type;
+    KeyboardChecks check;
+    int maxlength;
+    bool limit;
+    char *input;
+    char *okStr;
+    KeyboardCallback callback;
+    void *userdata;
+    bool visible;
+} KeyboardData;
+
+static void keyboardUpdate(Screen *self)
+{
+    KeyboardData *data = (KeyboardData *)self->data;
+
+    if(!data->visible)
+    {
+        nn_swkbd_appear_arg appearArg;
+        nn_swkbd_get_default_appear_arg(&appearArg);
+
+        appearArg.keyboard_arg.config_arg.keyboard_layout = (nn_swkbd_keyboard_layout)data->layout;
+        appearArg.keyboard_arg.config_arg.language_type = (nn_swkbd_language_type)getLanguage();
+        appearArg.input_form_arg.max_text_length = data->maxlength;
+        appearArg.input_form_arg.is_limit_digit = data->limit;
+
+        if(data->okStr)
+            appearArg.keyboard_arg.config_arg.ok_string = (char16_t *)data->okStr;
+
+        if(data->input)
+            nn_swkbd_set_input_text_utf8(&appearArg, data->input);
+
+        switch(data->type)
+        {
+            case KEYBOARD_TYPE_RESTRICTED:
+                appearArg.keyboard_arg.config_arg.is_fep = false;
+                appearArg.keyboard_arg.config_arg.is_utf8 = true;
+                break;
+            case KEYBOARD_TYPE_NORMAL:
+                appearArg.keyboard_arg.config_arg.is_fep = true;
+                appearArg.keyboard_arg.config_arg.is_utf8 = true;
+                break;
+        }
+
+        nn_swkbd_appear(&appearArg);
+        data->visible = true;
+    }
+
+    nn_swkbd_main_loop_arg mainLoopArg;
+    nn_swkbd_get_default_main_loop_arg(&mainLoopArg);
+    nn_swkbd_calc(&mainLoopArg);
+
+    if(nn_swkbd_is_decide())
+    {
+        const char *text = nn_swkbd_get_input_text_utf8();
+        char *textCopy = MEMAllocFromDefaultHeap(strlen(text) + 1);
+        if(textCopy)
+            strcpy(textCopy, text);
+
+        bool ok = true;
+        if(data->check != CHECK_NONE && textCopy)
+        {
+            size_t len = strlen(textCopy);
+            for(size_t i = 0; i < len; ++i)
+            {
+                switch(data->check)
+                {
+                    case CHECK_NUMERICAL:
+                        if(textCopy[i] < '0' || textCopy[i] > '9')
+                            ok = false;
+                        break;
+                    case CHECK_HEXADECIMAL:
+                        if(!((textCopy[i] >= '0' && textCopy[i] <= '9') || (textCopy[i] >= 'a' && textCopy[i] <= 'f') || (textCopy[i] >= 'A' && textCopy[i] <= 'F')))
+                            ok = false;
+                        break;
+                    case CHECK_ALPHANUMERICAL:
+                        if(!((textCopy[i] >= '0' && textCopy[i] <= '9') || (textCopy[i] >= 'a' && textCopy[i] <= 'z') || (textCopy[i] >= 'A' && textCopy[i] <= 'Z')))
+                            ok = false;
+                        break;
+                    case CHECK_URL:
+                        if(!((textCopy[i] >= '0' && textCopy[i] <= '9') || (textCopy[i] >= 'a' && textCopy[i] <= 'z') || (textCopy[i] >= 'A' && textCopy[i] <= 'Z') || textCopy[i] == '.' || textCopy[i] == ':' || textCopy[i] == '/' || textCopy[i] == '-' || textCopy[i] == '_' || textCopy[i] == '?' || textCopy[i] == '&' || textCopy[i] == '=' || textCopy[i] == '%' || textCopy[i] == '+' || textCopy[i] == '#'))
+                            ok = false;
+                        break;
+                    default:
+                        break;
+                }
+                if(!ok)
+                    break;
+            }
+        }
+
+        KeyboardCallback cb = data->callback;
+        void *ud = data->userdata;
+
+        nn_swkbd_disappear();
+        screenPop();
+
+        if(cb)
+            cb(ok, ok ? textCopy : NULL, ud);
+        if(textCopy)
+            MEMFreeToDefaultHeap(textCopy);
+    }
+    else if(nn_swkbd_is_cancel())
+    {
+        KeyboardCallback cb = data->callback;
+        void *ud = data->userdata;
+        nn_swkbd_disappear();
+        screenPop();
+        if(cb)
+            cb(false, NULL, ud);
+    }
+}
+
+static void keyboardDraw(Screen *self)
+{
+    nn_swkbd_draw_vpad_arg drawVpadArg;
+    nn_swkbd_get_default_draw_vpad_arg(&drawVpadArg);
+    nn_swkbd_draw_vpad(&drawVpadArg);
+
+    nn_swkbd_draw_drc_arg drawDrcArg;
+    nn_swkbd_get_default_draw_drc_arg(&drawDrcArg);
+    nn_swkbd_draw_drc(&drawDrcArg);
+
+    (void)self;
+}
+
+static void keyboardExit(Screen *self)
+{
+    KeyboardData *data = (KeyboardData *)self->data;
+    if(data)
+    {
+        if(data->input)
+            MEMFreeToDefaultHeap(data->input);
+        if(data->okStr)
+            MEMFreeToDefaultHeap(data->okStr);
+        MEMFreeToDefaultHeap(data);
+    }
+    MEMFreeToDefaultHeap(self);
+}
+
+void showKeyboard(KeyboardLayout layout, KeyboardType type, KeyboardChecks check, int maxlength, bool limit, const char *input, const char *okStr, KeyboardCallback callback, void *userdata)
+{
+    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
+    if(self == NULL)
+        return;
+
+    KeyboardData *data = MEMAllocFromDefaultHeap(sizeof(KeyboardData));
+    if(data == NULL)
+    {
+        MEMFreeToDefaultHeap(self);
+        return;
+    }
+
+    data->layout = layout;
+    data->type = type;
+    data->check = check;
+    data->maxlength = maxlength;
+    data->limit = limit;
+    if(input)
+    {
+        data->input = MEMAllocFromDefaultHeap(strlen(input) + 1);
+        if(data->input)
+            strcpy(data->input, input);
+    }
+    else
+        data->input = NULL;
+    if(okStr)
+    {
+        data->okStr = MEMAllocFromDefaultHeap(strlen(okStr) + 1);
+        if(data->okStr)
+            strcpy(data->okStr, okStr);
+    }
+    else
+        data->okStr = NULL;
+    data->callback = callback;
+    data->userdata = userdata;
+    data->visible = false;
+
+    self->onUpdate = keyboardUpdate;
+    self->onDraw = keyboardDraw;
+    self->onExit = keyboardExit;
+    self->data = data;
+    self->dirty = true;
+
+    screenPush(self);
+}

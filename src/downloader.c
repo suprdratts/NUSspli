@@ -35,7 +35,6 @@
 #include <queue.h>
 #include <renderer.h>
 #include <romfs.h>
-#include <screen.h>
 #include <state.h>
 #include <staticMem.h>
 #include <thread.h>
@@ -387,6 +386,33 @@ static const char *translateCurlError(CURLcode err, const char *error)
     }
 }
 
+typedef struct
+{
+    char url[256];
+    char file[FS_MAX_PATH];
+    downloadData *data;
+    FileType type;
+    bool resume;
+    QUEUE_DATA *queueData;
+    RAMBUF *rambuf;
+    ResultCallback callback;
+    void *userdata;
+
+    // State
+    int state;
+    FILE *fp;
+    size_t fileSize;
+    volatile curlProgressData cdata;
+    OSThread *dlThread;
+    OSTime t;
+    OSTick lastTransfair;
+    size_t downloaded;
+    float oldBps;
+    int frames;
+    int networkErrorFrames;
+    char networkErrorMsg[1024];
+} DownloadFileData;
+
 static void drawStatLine(int line, curl_off_t totalSize, curl_off_t currentSize, float bps, uint32_t *eta)
 {
     if(currentSize)
@@ -412,34 +438,6 @@ static void drawStatLine(int line, curl_off_t totalSize, curl_off_t currentSize,
     textToFrame(line, ALIGNED_RIGHT, toScreen);
 }
 
-typedef struct
-{
-    char url[256];
-    char file[FS_MAX_PATH];
-    downloadData *data;
-    FileType type;
-    bool resume;
-    QUEUE_DATA *queueData;
-    RAMBUF *rambuf;
-    ResultCallback callback;
-    void *userdata;
-
-    // State
-    int state;
-    FILE *fp;
-    size_t fileSize;
-    volatile curlProgressData cdata;
-    OSThread *dlThread;
-    OSTime t;
-    OSTick lastTransfair;
-    size_t downloaded;
-    float oldBps;
-    int frames;
-    int result;
-    int networkErrorFrames;
-    char networkErrorMsg[1024];
-} DownloadFileData;
-
 static void downloadFileDraw(Screen *self)
 {
     DownloadFileData *data = (DownloadFileData *)self->data;
@@ -455,7 +453,8 @@ static void downloadFileDraw(Screen *self)
         {
             int s = data->networkErrorFrames / 60;
             char *p = strchr(data->networkErrorMsg, '_'); // Hacky
-            if(p) *p = '0' + s;
+            if(p)
+                *p = '0' + s;
         }
     }
     else
@@ -482,9 +481,11 @@ static void downloadFileDraw(Screen *self)
                     bps += data->oldBps;
                     data->oldBps = bps;
                 }
-                else bps = 0.0f;
+                else
+                    bps = 0.0f;
             }
-            else bps = 0.0f;
+            else
+                bps = 0.0f;
         }
         data->lastTransfair = ts;
 
@@ -506,11 +507,13 @@ static void downloadFileDraw(Screen *self)
             sprintf(toScreen, "(%d/%d)", data->data->dcontent + 1, data->data->contents);
             textToFrame(line, ALIGNED_CENTER, toScreen);
         }
-        else line = 0;
+        else
+            line = 0;
 
         if(dltotal)
         {
-            if(!data->rambuf) checkForQueueErrors();
+            if(!data->rambuf)
+                checkForQueueErrors();
             dltotal += data->fileSize;
             const char *name = data->rambuf ? data->file : strrchr(data->file, '/') + 1;
             sprintf(toScreen, "%s %s", localise("Downloading"), name);
@@ -554,18 +557,22 @@ static void downloadFileUpdate(Screen *self)
                         if(data->fileSize == data->data->cs)
                         {
                             data->data->dlnow += data->fileSize;
-                            if(data->queueData) data->queueData->downloaded += data->fileSize;
+                            if(data->queueData)
+                                data->queueData->downloaded += data->fileSize;
                             ResultCallback cb = data->callback;
                             void *ud = data->userdata;
                             screenPop();
-                            if(cb) cb(true, ud);
+                            if(cb)
+                                cb(true, ud);
                             return;
                         }
-                        if(data->fileSize > data->data->cs) data->fileSize = 0; // Restart
+                        if(data->fileSize > data->data->cs)
+                            data->fileSize = 0; // Restart
                     }
                 }
             }
-            else data->fileSize = 0;
+            else
+                data->fileSize = 0;
             data->fp = (void *)openFile(data->file, data->fileSize ? "a" : "w", data->data ? data->data->cs : 0);
         }
 
@@ -574,7 +581,8 @@ static void downloadFileUpdate(Screen *self)
             ResultCallback cb = data->callback;
             void *ud = data->userdata;
             screenPop();
-            if(cb) cb(false, ud);
+            if(cb)
+                cb(false, ud);
             return;
         }
 
@@ -598,11 +606,15 @@ static void downloadFileUpdate(Screen *self)
         data->dlThread = startThread("NUSspli downloader", THREAD_PRIORITY_HIGH, STACKSIZE_BIG, dlThreadMain, 1, (char *)argv, OS_THREAD_ATTRIB_AFFINITY_CPU0);
         if(data->dlThread == NULL)
         {
-            if(data->rambuf) fclose(data->fp); else addToIOQueue(NULL, 0, 0, (FSAFileHandle)data->fp);
+            if(data->rambuf)
+                fclose(data->fp);
+            else
+                addToIOQueue(NULL, 0, 0, (FSAFileHandle)data->fp);
             ResultCallback cb = data->callback;
             void *ud = data->userdata;
             screenPop();
-            if(cb) cb(false, ud);
+            if(cb)
+                cb(false, ud);
             return;
         }
         data->lastTransfair = OSGetTick();
@@ -618,7 +630,10 @@ static void downloadFileUpdate(Screen *self)
             CURLcode ret;
             stopThread(data->dlThread, (int *)&ret);
             data->dlThread = NULL;
-            if(data->rambuf) fclose(data->fp); else addToIOQueue(NULL, 0, 0, (FSAFileHandle)data->fp);
+            if(data->rambuf)
+                fclose(data->fp);
+            else
+                addToIOQueue(NULL, 0, 0, (FSAFileHandle)data->fp);
             data->fp = NULL;
 
             if(ret != CURLE_OK)
@@ -629,7 +644,12 @@ static void downloadFileUpdate(Screen *self)
                 switch(ret)
                 {
                     case CURLE_RANGE_ERROR:
-                        if(data->rambuf) { MEMFreeToDefaultHeap(data->rambuf->buf); data->rambuf->buf = NULL; data->rambuf->size = 0; }
+                        if(data->rambuf)
+                        {
+                            MEMFreeToDefaultHeap(data->rambuf->buf);
+                            data->rambuf->buf = NULL;
+                            data->rambuf->size = 0;
+                        }
                         data->state = 0; // Retry from start
                         return;
                     case CURLE_COULDNT_RESOLVE_HOST:
@@ -663,17 +683,23 @@ static void downloadFileUpdate(Screen *self)
 
             long resp;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &resp);
-            if(resp == 206) resp = 200;
+            if(resp == 206)
+                resp = 200;
 
             if(resp != 200)
             {
-                if(!data->rambuf) { flushIOQueue(); FSARemove(getFSAClient(), data->file); }
+                if(!data->rambuf)
+                {
+                    flushIOQueue();
+                    FSARemove(getFSAClient(), data->file);
+                }
                 if(resp == 404 && (data->type & FILE_TYPE_TIK) == FILE_TYPE_TIK)
                 {
                     ResultCallback cb = data->callback;
                     void *ud = data->userdata;
                     screenPop();
-                    if(cb) cb(2, ud); // Need fake ticket
+                    if(cb)
+                        cb(2, ud); // Need fake ticket
                     return;
                 }
                 sprintf(data->networkErrorMsg, "%s: %ld\n%s: %s", localise("The download returned a result different to 200 (OK)"), resp, localise("File"), data->rambuf ? data->file : prettyDir(data->file));
@@ -686,12 +712,14 @@ static void downloadFileUpdate(Screen *self)
                 curl_off_t dld;
                 curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD_T, &dld);
                 data->data->dlnow += (dld + data->fileSize);
-                if(data->queueData) data->queueData->downloaded += (dld + data->fileSize);
+                if(data->queueData)
+                    data->queueData->downloaded += (dld + data->fileSize);
             }
             ResultCallback cb = data->callback;
             void *ud = data->userdata;
             screenPop();
-            if(cb) cb(true, ud);
+            if(cb)
+                cb(true, ud);
         }
         else if(vpad.trigger & VPAD_BUTTON_B)
         {
@@ -707,11 +735,14 @@ static void downloadFileUpdate(Screen *self)
             ResultCallback cb = data->callback;
             void *ud = data->userdata;
             screenPop();
-            if(cb) cb(false, ud);
+            if(cb)
+                cb(false, ud);
             return;
         }
-        if(vpad.trigger & VPAD_BUTTON_Y) retry = true;
-        if(autoResumeEnabled() && --data->networkErrorFrames == 0) retry = true;
+        if(vpad.trigger & VPAD_BUTTON_Y)
+            retry = true;
+        if(autoResumeEnabled() && --data->networkErrorFrames == 0)
+            retry = true;
 
         if(retry)
         {
@@ -722,7 +753,8 @@ static void downloadFileUpdate(Screen *self)
                 deinitDownloader();
                 socket_lib_finish();
                 NNResult nnres = ACClose();
-                while(ACGetCloseStatus(nnres).value != 0);
+                while(ACGetCloseStatus(nnres).value != 0)
+                    ;
                 nnres = ACConnect();
                 if(nnres.value == 0)
                 {
@@ -739,8 +771,15 @@ static void downloadFileUpdate(Screen *self)
 static void downloadFileExit(Screen *self)
 {
     DownloadFileData *data = (DownloadFileData *)self->data;
-    if(data->dlThread) stopThread(data->dlThread, NULL);
-    if(data->fp) { if(data->rambuf) fclose(data->fp); else addToIOQueue(NULL, 0, 0, (FSAFileHandle)data->fp); }
+    if(data->dlThread)
+        stopThread(data->dlThread, NULL);
+    if(data->fp)
+    {
+        if(data->rambuf)
+            fclose(data->fp);
+        else
+            addToIOQueue(NULL, 0, 0, (FSAFileHandle)data->fp);
+    }
     MEMFreeToDefaultHeap(data);
     MEMFreeToDefaultHeap(self);
 }
@@ -749,7 +788,16 @@ void downloadFile(const char *url, char *file, downloadData *data, FileType type
 {
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
     DownloadFileData *d = MEMAllocFromDefaultHeap(sizeof(DownloadFileData));
-    if(!self || !d) { if(self) MEMFreeToDefaultHeap(self); if(d) MEMFreeToDefaultHeap(d); if(callback) callback(false, userdata); return; }
+    if(!self || !d)
+    {
+        if(self)
+            MEMFreeToDefaultHeap(self);
+        if(d)
+            MEMFreeToDefaultHeap(d);
+        if(callback)
+            callback(false, userdata);
+        return;
+    }
 
     OSBlockSet(d, 0, sizeof(DownloadFileData));
     strncpy(d->url, url, 255);
@@ -829,19 +877,29 @@ static void downloadTitleUpdate(Screen *self)
             strcat(data->folderName, " [");
             strcat(data->folderName, tid);
             strcat(data->folderName, "]");
-            if(data->titleVer[0]) { strcat(data->folderName, " v"); strcat(data->folderName, data->titleVer); }
+            if(data->titleVer[0])
+            {
+                strcat(data->folderName, " v");
+                strcat(data->folderName, data->titleVer);
+            }
 
             strcpy(data->installDir, data->dlDev == NUSDEV_USB01 ? INSTALL_DIR_USB1 : (data->dlDev == NUSDEV_USB02 ? INSTALL_DIR_USB2 : (data->dlDev == NUSDEV_SD ? INSTALL_DIR_SD : INSTALL_DIR_MLC)));
-            if(!dirExists(data->installDir)) createDirectory(data->installDir);
+            if(!dirExists(data->installDir))
+                createDirectory(data->installDir);
             strcat(data->installDir, data->folderName);
             strcat(data->installDir, "/");
-            if(!dirExists(data->installDir)) createDirectory(data->installDir);
+            if(!dirExists(data->installDir))
+                createDirectory(data->installDir);
 
             char tmdPath[FS_MAX_PATH];
             strcpy(tmdPath, data->installDir);
             strcat(tmdPath, "title.tmd");
             FSAFileHandle fp = openFile(tmdPath, "w", data->tmdSize);
-            if(fp) { addToIOQueue(data->tmd, 1, data->tmdSize, fp); addToIOQueue(NULL, 0, 0, fp); }
+            if(fp)
+            {
+                addToIOQueue(data->tmd, 1, data->tmdSize, fp);
+                addToIOQueue(NULL, 0, 0, fp);
+            }
 
             data->data.name = data->titleEntry->name;
             data->data.contents = data->tmd->num_contents + 1;
@@ -862,24 +920,28 @@ static void downloadTitleUpdate(Screen *self)
 
             data->state = 1; // Download TIK
             char tikUrl[256], tikPath[FS_MAX_PATH];
-            strcpy(tikUrl, data->downloadUrl); strcat(tikUrl, "cetk");
-            strcpy(tikPath, data->installDir); strcat(tikPath, "title.tik");
+            strcpy(tikUrl, data->downloadUrl);
+            strcat(tikUrl, "cetk");
+            strcpy(tikPath, data->installDir);
+            strcat(tikPath, "title.tik");
             if(!fileExists(tikPath))
             {
                 data->tikBuf = allocRamBuf();
                 downloadFile(tikUrl, tikPath, &data->data, FILE_TYPE_TIK | FILE_TYPE_TORAM, false, data->queueData, data->tikBuf, downloadTitleTaskDone, self);
             }
-            else data->state = 2;
+            else
+                data->state = 2;
             break;
         }
         case 2: // Cert
         {
             char certPath[FS_MAX_PATH];
-            strcpy(certPath, data->installDir); strcat(certPath, "title.cert");
+            strcpy(certPath, data->installDir);
+            strcat(certPath, "title.cert");
             if(!fileExists(certPath))
             {
                 data->state = 20; // Waiting for cert
-                generateCert(data->tmd, (TICKET *)data->tikBuf->buf, data->tikBuf->size, certPath, certDone, data);
+                generateCert(data->tmd, data->tikBuf ? (TICKET *)data->tikBuf->buf : NULL, data->tikBuf ? data->tikBuf->size : 0, certPath, certDone, data);
                 return;
             }
             data->state = 3;
@@ -895,8 +957,11 @@ static void downloadTitleUpdate(Screen *self)
             }
             char cid[9], appUrl[256], appPath[FS_MAX_PATH];
             hex(data->tmd->contents[data->contentIdx].cid, 8, cid);
-            strcpy(appUrl, data->downloadUrl); strcat(appUrl, cid);
-            strcpy(appPath, data->installDir); strcat(appPath, cid); strcat(appPath, ".app");
+            strcpy(appUrl, data->downloadUrl);
+            strcat(appUrl, cid);
+            strcpy(appPath, data->installDir);
+            strcat(appPath, cid);
+            strcat(appPath, ".app");
             data->data.dcontent++;
             data->data.cs = data->tmd->contents[data->contentIdx].size;
             data->state = 31; // Downloading .app
@@ -909,8 +974,12 @@ static void downloadTitleUpdate(Screen *self)
             {
                 char cid[9], h3Url[256], h3Path[FS_MAX_PATH];
                 hex(data->tmd->contents[data->contentIdx].cid, 8, cid);
-                strcpy(h3Url, data->downloadUrl); strcat(h3Url, cid); strcat(h3Url, ".h3");
-                strcpy(h3Path, data->installDir); strcat(h3Path, cid); strcat(h3Path, ".h3");
+                strcpy(h3Url, data->downloadUrl);
+                strcat(h3Url, cid);
+                strcat(h3Url, ".h3");
+                strcpy(h3Path, data->installDir);
+                strcat(h3Path, cid);
+                strcat(h3Path, ".h3");
                 data->data.dcontent++;
                 data->data.cs = getH3size(data->tmd->contents[data->contentIdx].size);
                 data->state = 33; // Downloading .h3
@@ -932,7 +1001,10 @@ static void downloadTitleUpdate(Screen *self)
                 bool hasDependencies = false;
                 switch(getTidHighFromTid(data->tmd->tid))
                 {
-                    case TID_HIGH_DLC: case TID_HIGH_UPDATE: hasDependencies = true; break;
+                    case TID_HIGH_DLC:
+                    case TID_HIGH_UPDATE:
+                        hasDependencies = true;
+                        break;
                 }
                 const char *titleName = data->titleEntry->name;
                 NUSDEV dlDev = data->dlDev;
@@ -948,12 +1020,14 @@ static void downloadTitleUpdate(Screen *self)
             }
             else
             {
-               screenPop();
-               if(cb) cb(true, ud);
+                screenPop();
+                if(cb)
+                    cb(true, ud);
             }
             break;
         }
-        default: break;
+        default:
+            break;
     }
 }
 
@@ -964,7 +1038,8 @@ static void downloadTitleTaskDone(bool result, void *userdata)
     if(result == 2 && data->state == 1) // Need fake ticket
     {
         char tikPath[FS_MAX_PATH];
-        strcpy(tikPath, data->installDir); strcat(tikPath, "title.tik");
+        strcpy(tikPath, data->installDir);
+        strcat(tikPath, "title.tik");
         generateTik(tikPath, data->tmd);
         data->state = 2;
         return;
@@ -974,26 +1049,40 @@ static void downloadTitleTaskDone(bool result, void *userdata)
         ResultCallback cb = data->callback;
         void *ud = data->userdata;
         screenPop();
-        if(cb) cb(false, ud);
+        if(cb)
+            cb(false, ud);
         return;
     }
 
-    if(data->state == 1) {
+    if(data->state == 1)
+    {
         char tikPath[FS_MAX_PATH];
-        strcpy(tikPath, data->installDir); strcat(tikPath, "title.tik");
+        strcpy(tikPath, data->installDir);
+        strcat(tikPath, "title.tik");
         FSAFileHandle fp = openFile(tikPath, "w", data->tikBuf->size);
-        if(fp) { addToIOQueue(data->tikBuf->buf, 1, data->tikBuf->size, fp); addToIOQueue(NULL, 0, 0, fp); }
+        if(fp)
+        {
+            addToIOQueue(data->tikBuf->buf, 1, data->tikBuf->size, fp);
+            addToIOQueue(NULL, 0, 0, fp);
+        }
         data->state = 2;
     }
-    else if(data->state == 31) data->state = 32;
-    else if(data->state == 33) { data->contentIdx++; data->state = 3; }
+    else if(data->state == 31)
+        data->state = 32;
+    else if(data->state == 33)
+    {
+        data->contentIdx++;
+        data->state = 3;
+    }
 }
 
 static void downloadTitleExit(Screen *self)
 {
     DownloadTitleData *data = (DownloadTitleData *)self->data;
-    if(data->tikBuf) freeRamBuf(data->tikBuf);
-    if(data->tmd) MEMFreeToDefaultHeap(data->tmd);
+    if(data->tikBuf)
+        freeRamBuf(data->tikBuf);
+    if(data->tmd)
+        MEMFreeToDefaultHeap(data->tmd);
     MEMFreeToDefaultHeap(data);
     MEMFreeToDefaultHeap(self);
 }
@@ -1002,7 +1091,16 @@ void downloadTitle(const TMD *tmd, size_t tmdSize, const TitleEntry *titleEntry,
 {
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
     DownloadTitleData *data = MEMAllocFromDefaultHeap(sizeof(DownloadTitleData));
-    if(!self || !data) { if(self) MEMFreeToDefaultHeap(self); if(data) MEMFreeToDefaultHeap(data); if(callback) callback(false, userdata); return; }
+    if(!self || !data)
+    {
+        if(self)
+            MEMFreeToDefaultHeap(self);
+        if(data)
+            MEMFreeToDefaultHeap(data);
+        if(callback)
+            callback(false, userdata);
+        return;
+    }
 
     OSBlockSet(data, 0, sizeof(DownloadTitleData));
     data->tmd = (TMD *)MEMAllocFromDefaultHeap(tmdSize);
@@ -1010,7 +1108,8 @@ void downloadTitle(const TMD *tmd, size_t tmdSize, const TitleEntry *titleEntry,
     data->tmdSize = tmdSize;
     data->titleEntry = titleEntry;
     strncpy(data->titleVer, titleVer, 32);
-    if(folderName) strncpy(data->folderName, folderName, FS_MAX_PATH - 1);
+    if(folderName)
+        strncpy(data->folderName, folderName, FS_MAX_PATH - 1);
     data->inst = inst;
     data->dlDev = dlDev;
     data->toUSB = toUSB;
@@ -1032,7 +1131,9 @@ void downloadTitle(const TMD *tmd, size_t tmdSize, const TitleEntry *titleEntry,
 RAMBUF *allocRamBuf()
 {
     RAMBUF *ret = MEMAllocFromDefaultHeap(sizeof(RAMBUF));
-    if(ret == NULL) return NULL;
+    if(ret == NULL)
+        return NULL;
+
     ret->buf = NULL;
     ret->size = 0;
     return ret;
@@ -1040,6 +1141,8 @@ RAMBUF *allocRamBuf()
 
 void freeRamBuf(RAMBUF *rambuf)
 {
-    if(rambuf->buf != NULL) MEMFreeToDefaultHeap(rambuf->buf);
+    if(rambuf->buf != NULL)
+        MEMFreeToDefaultHeap(rambuf->buf);
+
     MEMFreeToDefaultHeap(rambuf);
 }

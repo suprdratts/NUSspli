@@ -148,12 +148,16 @@ static void innerMain()
                                                     checkStacks("main()");
                                                     initFSSpace();
                                                     checkStacks("main");
-                                                    screenPush(updateCheckScreenGet());
-                                                    screenMainLoop();
+                                                    Screen *us = updateCheckScreenGet();
+                                                    if(us)
+                                                        screenPush(us);
+                                                    else
+                                                        mainMenu();
+
+                                                    screenMainLoop(); // real main loop
                                                     drawByeFrame();
                                                     checkStacks("main");
                                                     debugPrintf("Deinitializing libraries...");
-
                                                     shutdownQueue();
                                                 }
                                                 else
@@ -203,8 +207,12 @@ static void innerMain()
 
                 if(lerr != NULL)
                 {
-                    showErrorFrame(lerr);
-                    screenMainLoop();
+                    drawErrorFrame(lerr, ANY_RETURN);
+                    showFrame();
+
+                    while(!(vpad.trigger))
+                        showFrame();
+
                     drawByeFrame();
                 }
 

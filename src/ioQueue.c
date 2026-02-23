@@ -36,11 +36,11 @@
 #include <filesystem.h>
 #include <input.h>
 #include <ioQueue.h>
+#include <menu/utils.h>
 #include <renderer.h>
 #include <state.h>
 #include <thread.h>
 #include <utils.h>
-#include <menu/utils.h>
 
 #define IO_MAX_FILE_BUFFER   (1024 * 1024) // 1 MB
 #define MAX_IO_QUEUE_ENTRIES (64 * (IO_MAX_FILE_BUFFER / (1024 * 1024))) // 64 MB

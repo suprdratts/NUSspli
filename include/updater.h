@@ -20,8 +20,9 @@
 
 #include <wut-fixups.h>
 
-#include <stdbool.h>
 #include <menu/utils.h>
+#include <screen.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -35,6 +36,7 @@ extern "C"
     } NUSSPLI_TYPE;
 
     void update(const char *newVersion, NUSSPLI_TYPE type, ResultCallback callback, void *userdata);
+    Screen *updateCheckScreenGet();
 
 #ifdef __cplusplus
 }

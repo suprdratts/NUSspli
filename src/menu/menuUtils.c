@@ -184,7 +184,8 @@ static void errorExit(Screen *self)
     ErrorData *data = (ErrorData *)self->data;
     if(data)
     {
-        if(data->text) MEMFreeToDefaultHeap(data->text);
+        if(data->text)
+            MEMFreeToDefaultHeap(data->text);
         MEMFreeToDefaultHeap(data);
     }
     MEMFreeToDefaultHeap(self);
@@ -193,13 +194,19 @@ static void errorExit(Screen *self)
 void showErrorFrame(const char *text)
 {
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
-    if(self == NULL) return;
+    if(self == NULL)
+        return;
 
     ErrorData *data = MEMAllocFromDefaultHeap(sizeof(ErrorData));
-    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+    if(data == NULL)
+    {
+        MEMFreeToDefaultHeap(self);
+        return;
+    }
 
     data->text = MEMAllocFromDefaultHeap(strlen(text) + 1);
-    if(data->text) strcpy(data->text, text);
+    if(data->text)
+        strcpy(data->text, text);
     data->option = ANY_RETURN;
 
     self->onUpdate = errorUpdate;
@@ -227,7 +234,8 @@ static void confirmationUpdate(Screen *self)
         ResultCallback cb = data->callback;
         void *ud = data->userdata;
         screenPop();
-        if(cb) cb(result, ud);
+        if(cb)
+            cb(result, ud);
     }
 }
 
@@ -241,7 +249,8 @@ static void confirmationExit(Screen *self)
     ConfirmationData *data = (ConfirmationData *)self->data;
     if(data)
     {
-        if(data->ovl) removeErrorOverlay(data->ovl);
+        if(data->ovl)
+            removeErrorOverlay(data->ovl);
         MEMFreeToDefaultHeap(data);
     }
     MEMFreeToDefaultHeap(self);
@@ -250,10 +259,15 @@ static void confirmationExit(Screen *self)
 void showConfirmation(const char *text, ResultCallback callback, void *userdata)
 {
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
-    if(self == NULL) return;
+    if(self == NULL)
+        return;
 
     ConfirmationData *data = MEMAllocFromDefaultHeap(sizeof(ConfirmationData));
-    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+    if(data == NULL)
+    {
+        MEMFreeToDefaultHeap(self);
+        return;
+    }
 
     data->callback = callback;
     data->userdata = userdata;
@@ -283,7 +297,8 @@ static void checkSystemStepCallback(bool result, void *userdata)
     CheckSystemData *data = (CheckSystemData *)userdata;
     if(!result)
     {
-        if(data->callback) data->callback(false, data->userdata);
+        if(data->callback)
+            data->callback(false, data->userdata);
         MEMFreeToDefaultHeap(data);
         return;
     }
@@ -302,7 +317,8 @@ static void checkSystemStepCallback(bool result, void *userdata)
     }
     else
     {
-        if(data->callback) data->callback(true, data->userdata);
+        if(data->callback)
+            data->callback(true, data->userdata);
         MEMFreeToDefaultHeap(data);
     }
 }
@@ -316,7 +332,8 @@ void checkSystemTitle(uint64_t tid, MCPRegion region, bool deinstall, ResultCall
         case TID_HIGH_SYSTEM_APPLET:
             break;
         default:
-            if(callback) callback(true, userdata);
+            if(callback)
+                callback(true, userdata);
             return;
     }
 
@@ -328,16 +345,47 @@ void checkSystemTitle(uint64_t tid, MCPRegion region, bool deinstall, ResultCall
         {
             switch(settings.game_region)
             {
-                case MCP_REGION_EUROPE: if(region & MCP_REGION_EUROPE) { if(callback) callback(true, userdata); return; } break;
-                case MCP_REGION_USA: if(region & MCP_REGION_USA) { if(callback) callback(true, userdata); return; } break;
-                case MCP_REGION_JAPAN: if(region & MCP_REGION_JAPAN) { if(callback) callback(true, userdata); return; } break;
+                case MCP_REGION_EUROPE:
+                    if(region & MCP_REGION_EUROPE)
+                    {
+                        if(callback)
+                            callback(true, userdata);
+                        return;
+                    }
+                    break;
+                case MCP_REGION_USA:
+                    if(region & MCP_REGION_USA)
+                    {
+                        if(callback)
+                            callback(true, userdata);
+                        return;
+                    }
+                    break;
+                case MCP_REGION_JAPAN:
+                    if(region & MCP_REGION_JAPAN)
+                    {
+                        if(callback)
+                            callback(true, userdata);
+                        return;
+                    }
+                    break;
             }
         }
     }
 
     CheckSystemData *data = MEMAllocFromDefaultHeap(sizeof(CheckSystemData));
-    if(data == NULL) { if(callback) callback(false, userdata); return; }
-    data->tid = tid; data->region = region; data->deinstall = deinstall; data->callback = callback; data->userdata = userdata; data->step = 0;
+    if(data == NULL)
+    {
+        if(callback)
+            callback(false, userdata);
+        return;
+    }
+    data->tid = tid;
+    data->region = region;
+    data->deinstall = deinstall;
+    data->callback = callback;
+    data->userdata = userdata;
+    data->step = 0;
 
     char toFrame[512];
     sprintf(toFrame, "%s\n\n" BUTTON_A " %s || " BUTTON_B " %s", localise("This is a reliable way to brick your console!\nAre you sure you want to do that?"), localise("Yes"), localise("No"));
@@ -415,8 +463,10 @@ static void finishedExit(Screen *self)
     FinishedData *data = (FinishedData *)self->data;
     if(data)
     {
-        if(data->titleName) MEMFreeToDefaultHeap(data->titleName);
-        if(data->text) MEMFreeToDefaultHeap(data->text);
+        if(data->titleName)
+            MEMFreeToDefaultHeap(data->titleName);
+        if(data->text)
+            MEMFreeToDefaultHeap(data->text);
         MEMFreeToDefaultHeap(data);
     }
     stopNotification();
@@ -426,16 +476,22 @@ static void finishedExit(Screen *self)
 void showFinishedScreen(const char *titleName, FINISHING_OPERATION op)
 {
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
-    if(self == NULL) return;
+    if(self == NULL)
+        return;
 
     FinishedData *data = MEMAllocFromDefaultHeap(sizeof(FinishedData));
-    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+    if(data == NULL)
+    {
+        MEMFreeToDefaultHeap(self);
+        return;
+    }
 
     data->op = op;
     if(titleName)
     {
         data->titleName = MEMAllocFromDefaultHeap(strlen(titleName) + 1);
-        if(data->titleName) strcpy(data->titleName, titleName);
+        if(data->titleName)
+            strcpy(data->titleName, titleName);
     }
     else
         data->titleName = NULL;
@@ -443,13 +499,22 @@ void showFinishedScreen(const char *titleName, FINISHING_OPERATION op)
     const char *text;
     switch(op)
     {
-        case FINISHING_OPERATION_INSTALL: text = localise("Installed successfully!"); break;
-        case FINISHING_OPERATION_DEINSTALL: text = localise("Uninstalled successfully!"); break;
-        case FINISHING_OPERATION_DOWNLOAD: text = localise("Downloaded successfully!"); break;
-        case FINISHING_OPERATION_QUEUE: text = localise("Queue finished successfully!"); break;
+        case FINISHING_OPERATION_INSTALL:
+            text = localise("Installed successfully!");
+            break;
+        case FINISHING_OPERATION_DEINSTALL:
+            text = localise("Uninstalled successfully!");
+            break;
+        case FINISHING_OPERATION_DOWNLOAD:
+            text = localise("Downloaded successfully!");
+            break;
+        case FINISHING_OPERATION_QUEUE:
+            text = localise("Queue finished successfully!");
+            break;
     }
     data->text = MEMAllocFromDefaultHeap(strlen(text) + 1);
-    if(data->text) strcpy(data->text, text);
+    if(data->text)
+        strcpy(data->text, text);
 
     self->onUpdate = finishedUpdate;
     self->onDraw = finishedDraw;
@@ -468,10 +533,18 @@ void showNoSpaceOverlay(NUSDEV dev)
     {
         case NUSDEV_USB01:
         case NUSDEV_USB02:
-        case NUSDEV_USB: nd = "USB"; break;
-        case NUSDEV_SD: nd = "SD"; break;
-        case NUSDEV_MLC: nd = "MLC"; break;
-        default: nd = "unknown"; break;
+        case NUSDEV_USB:
+            nd = "USB";
+            break;
+        case NUSDEV_SD:
+            nd = "SD";
+            break;
+        case NUSDEV_MLC:
+            nd = "MLC";
+            break;
+        default:
+            nd = "unknown";
+            break;
     }
 
     char toFrame[256];
@@ -491,7 +564,8 @@ void showExitOverlay(bool really, ResultCallback callback, void *userdata)
 
     if(!really)
     {
-        if(callback) callback(true, userdata);
+        if(callback)
+            callback(true, userdata);
         return;
     }
 
@@ -502,11 +576,28 @@ void humanize(uint64_t size, char *out)
 {
     const char *m;
     float h = size;
-    if(size >= 1024llu * 1024llu * 1024llu * 1024llu) { h /= 1024.0F * 1024.0F * 1024.0F * 1024.0F; m = "TB"; }
-    else if(size >= 1024llu * 1024llu * 1024llu) { h /= 1024.0F * 1024.0F * 1024.0F; m = "GB"; }
-    else if(size >= 1024llu * 1024llu) { h /= 1024.0F * 1024.0F; m = "MB"; }
-    else if(size >= 1024llu) { h /= 1024.0F; m = "KB"; }
-    else m = "B";
+    if(size >= 1024llu * 1024llu * 1024llu * 1024llu)
+    {
+        h /= 1024.0F * 1024.0F * 1024.0F * 1024.0F;
+        m = "TB";
+    }
+    else if(size >= 1024llu * 1024llu * 1024llu)
+    {
+        h /= 1024.0F * 1024.0F * 1024.0F;
+        m = "GB";
+    }
+    else if(size >= 1024llu * 1024llu)
+    {
+        h /= 1024.0F * 1024.0F;
+        m = "MB";
+    }
+    else if(size >= 1024llu)
+    {
+        h /= 1024.0F;
+        m = "KB";
+    }
+    else
+        m = "B";
     sprintf(out, "%.02f %s", h, m);
 }
 

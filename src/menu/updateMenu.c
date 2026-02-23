@@ -47,8 +47,11 @@ static void updateMenuUpdate(Screen *self)
 
     if(vpad.trigger & VPAD_BUTTON_A)
     {
-        update(data->newVersion, data->type, NULL, NULL);
+        char version[32];
+        strcpy(version, data->newVersion);
+        NUSSPLI_TYPE type = data->type;
         screenPop();
+        update(version, type, NULL, NULL);
     }
     else if(vpad.trigger & VPAD_BUTTON_B)
     {

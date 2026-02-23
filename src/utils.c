@@ -38,8 +38,8 @@
 #pragma GCC diagnostic ignored "-Wundef"
 #include <coreinit/atomic.h>
 #include <coreinit/ios.h>
-#include <coreinit/memory.h>
 #include <coreinit/memdefaultheap.h>
+#include <coreinit/memory.h>
 #pragma GCC diagnostic pop
 
 int mcpHandle;
@@ -214,8 +214,12 @@ static void mcpProgressUpdate(Screen *self)
 
     if(!data->mcp_data->processing)
     {
+        bool res = data->mcp_data->err == 0;
+        ResultCallback cb = data->callback;
+        void *ud = data->userdata;
         screenPop();
-        if(data->callback) data->callback(data->mcp_data->err == 0, data->userdata);
+        if(cb)
+            cb(res, ud);
         return;
     }
 
@@ -305,8 +309,10 @@ static void mcpProgressExit(Screen *self)
     McpProgressData *data = (McpProgressData *)self->data;
     if(data)
     {
-        if(data->ovl) removeErrorOverlay(data->ovl);
-        if(data->game) MEMFreeToDefaultHeap(data->game);
+        if(data->ovl)
+            removeErrorOverlay(data->ovl);
+        if(data->game)
+            MEMFreeToDefaultHeap(data->game);
         MEMFreeToDefaultHeap(data);
     }
     MEMFreeToDefaultHeap(self);
@@ -315,17 +321,23 @@ static void mcpProgressExit(Screen *self)
 void showMcpProgress(McpData *mcp_data, const char *game, bool inst, ResultCallback callback, void *userdata)
 {
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
-    if(self == NULL) return;
+    if(self == NULL)
+        return;
 
     McpProgressData *data = MEMAllocFromDefaultHeap(sizeof(McpProgressData));
-    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+    if(data == NULL)
+    {
+        MEMFreeToDefaultHeap(self);
+        return;
+    }
 
     OSBlockSet(data, 0, sizeof(McpProgressData));
     data->mcp_data = mcp_data;
     if(game)
     {
         data->game = MEMAllocFromDefaultHeap(strlen(game) + 1);
-        if(data->game) strcpy(data->game, game);
+        if(data->game)
+            strcpy(data->game, game);
     }
     else
         data->game = NULL;
@@ -355,11 +367,27 @@ void showMcpProgress(McpData *mcp_data, const char *game, bool inst, ResultCallb
 #include <whb/log_udp.h>
 
 static const char days[7][4] = {
-    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
+    "Sun",
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri",
+    "Sat",
 };
 
 static const char months[12][4] = {
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Nov", "Dez",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Nov",
+    "Dez",
 };
 
 static spinlock debugLock;
@@ -393,14 +421,17 @@ void debugPrintf(const char *str, ...)
 {
     spinLock(debugLock);
     static char newStr[512];
+
     OSCalendarTime now;
     OSTicksToCalendarTime(OSGetTime(), &now);
     sprintf(newStr, "%s %02d %s %d %02d:%02d:%02d.%03d\t", days[now.tm_wday], now.tm_mday, months[now.tm_mon], now.tm_year, now.tm_hour, now.tm_min, now.tm_sec, now.tm_msec);
     size_t tss = strlen(newStr);
+
     va_list va;
     va_start(va, str);
     vsnprintf(newStr + tss, 511 - tss, str, va);
     va_end(va);
+
     WHBLogPrint(newStr);
     spinReleaseLock(debugLock);
 }
@@ -413,4 +444,4 @@ void checkStacks(const char *src)
     debugPrintf("%s: 0x%08X/0x%08X", src, OSCheckThreadStackUsage(trd), ((uint32_t)trd->stackStart) - ((uint32_t)trd->stackEnd));
 }
 
-#endif
+#endif // ifdef NUSSPLI_DEBUG

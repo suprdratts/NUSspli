@@ -80,8 +80,8 @@ static void drawFBMenuFrame(const char *path, LIST *folders, size_t pos, const s
     char l_str[128];
     strcpy(l_str, BUTTON_X " to switch to ");
     strcat(l_str, activeDevice == NUSDEV_USB ? "SD" : activeDevice == NUSDEV_SD ? "NAND"
-            : usbMounted                                                    ? "USB"
-                                                                            : "SD");
+            : usbMounted                                                        ? "USB"
+                                                                                : "SD");
     strcat(toWrite, localise(l_str));
     textToFrame(MAX_LINES - 2, ALIGNED_CENTER, toWrite);
 
@@ -148,7 +148,8 @@ static void refreshDirList(FileBrowserData *data)
 {
     clearList(data->folders, true);
     char *name = MEMAllocFromDefaultHeap(sizeof("../"));
-    if(name == NULL) return;
+    if(name == NULL)
+        return;
 
     OSBlockMove(name, "../", sizeof("../"), false);
     addToListEnd(data->folders, name);
@@ -168,7 +169,7 @@ static void refreshDirList(FileBrowserData *data)
                 {
                     OSBlockMove(name, entry.name, len, false);
                     name[len] = '/';
-                    name[len+1] = '\0';
+                    name[len + 1] = '\0';
                     addToListEnd(data->folders, name);
                 }
             }
@@ -188,7 +189,8 @@ static void fileBrowserUpdate(Screen *self)
         FileBrowserCallback cb = data->callback;
         void *ud = data->userdata;
         screenPop();
-        if(cb) cb(NULL, ud);
+        if(cb)
+            cb(NULL, ud);
         return;
     }
 
@@ -227,7 +229,8 @@ static void fileBrowserUpdate(Screen *self)
                 char *path = data->path;
                 data->path = NULL; // Prevent freeing in onExit
                 screenPop();
-                if(cb) cb(path, ud);
+                if(cb)
+                    cb(path, ud);
                 MEMFreeToDefaultHeap(path);
                 return;
             }
@@ -243,7 +246,8 @@ static void fileBrowserUpdate(Screen *self)
                     char *path = data->path;
                     data->path = NULL;
                     screenPop();
-                    if(cb) cb(path, ud);
+                    if(cb)
+                        cb(path, ud);
                     MEMFreeToDefaultHeap(path);
                     return;
                 }
@@ -256,30 +260,62 @@ static void fileBrowserUpdate(Screen *self)
 
     if(vpad.hold & VPAD_BUTTON_UP)
     {
-        if(data->oldHold != VPAD_BUTTON_UP) { data->oldHold = VPAD_BUTTON_UP; data->frameCount = 30; dpadAction = true; }
-        else if(data->frameCount == 0) dpadAction = true;
-        else { --data->frameCount; dpadAction = false; }
+        if(data->oldHold != VPAD_BUTTON_UP)
+        {
+            data->oldHold = VPAD_BUTTON_UP;
+            data->frameCount = 30;
+            dpadAction = true;
+        }
+        else if(data->frameCount == 0)
+            dpadAction = true;
+        else
+        {
+            --data->frameCount;
+            dpadAction = false;
+        }
 
         if(dpadAction)
         {
-            if(data->cursor) data->cursor--;
-            else if(data->mov && data->pos) data->pos--;
-            else if(!data->mov) data->cursor = getListSize(data->folders) - 1;
-            else { data->cursor = MAX_FILEBROWSER_LINES - 1; data->pos = getListSize(data->folders) - MAX_FILEBROWSER_LINES; }
+            if(data->cursor)
+                data->cursor--;
+            else if(data->mov && data->pos)
+                data->pos--;
+            else if(!data->mov)
+                data->cursor = getListSize(data->folders) - 1;
+            else
+            {
+                data->cursor = MAX_FILEBROWSER_LINES - 1;
+                data->pos = getListSize(data->folders) - MAX_FILEBROWSER_LINES;
+            }
             self->dirty = true;
         }
     }
     else if(vpad.hold & VPAD_BUTTON_DOWN)
     {
-        if(data->oldHold != VPAD_BUTTON_DOWN) { data->oldHold = VPAD_BUTTON_DOWN; data->frameCount = 30; dpadAction = true; }
-        else if(data->frameCount == 0) dpadAction = true;
-        else { --data->frameCount; dpadAction = false; }
+        if(data->oldHold != VPAD_BUTTON_DOWN)
+        {
+            data->oldHold = VPAD_BUTTON_DOWN;
+            data->frameCount = 30;
+            dpadAction = true;
+        }
+        else if(data->frameCount == 0)
+            dpadAction = true;
+        else
+        {
+            --data->frameCount;
+            dpadAction = false;
+        }
 
         if(dpadAction)
         {
-            if(data->cursor + data->pos >= getListSize(data->folders) - 1) { data->cursor = data->pos = 0; }
-            else if(data->cursor < MAX_FILEBROWSER_LINES - 1) data->cursor++;
-            else data->pos++;
+            if(data->cursor + data->pos >= getListSize(data->folders) - 1)
+            {
+                data->cursor = data->pos = 0;
+            }
+            else if(data->cursor < MAX_FILEBROWSER_LINES - 1)
+                data->cursor++;
+            else
+                data->pos++;
             self->dirty = true;
         }
     }
@@ -288,9 +324,14 @@ static void fileBrowserUpdate(Screen *self)
     {
         switch((int)activeDevice)
         {
-            case NUSDEV_USB: activeDevice = NUSDEV_SD; break;
-            case NUSDEV_SD: activeDevice = NUSDEV_MLC; break;
-            case NUSDEV_MLC: activeDevice = data->usbMounted ? NUSDEV_USB : NUSDEV_SD;
+            case NUSDEV_USB:
+                activeDevice = NUSDEV_SD;
+                break;
+            case NUSDEV_SD:
+                activeDevice = NUSDEV_MLC;
+                break;
+            case NUSDEV_MLC:
+                activeDevice = data->usbMounted ? NUSDEV_USB : NUSDEV_SD;
         }
         strcpy(data->path, (activeDevice & NUSDEV_USB) ? (data->usbMounted == NUSDEV_USB01 ? INSTALL_DIR_USB1 : INSTALL_DIR_USB2) : (activeDevice == NUSDEV_SD ? INSTALL_DIR_SD : INSTALL_DIR_MLC));
         refreshDirList(data);
@@ -302,7 +343,8 @@ static void fileBrowserUpdate(Screen *self)
         queueMenu();
     }
 
-    if(data->oldHold && !(vpad.hold & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN))) data->oldHold = 0;
+    if(data->oldHold && !(vpad.hold & (VPAD_BUTTON_UP | VPAD_BUTTON_DOWN)))
+        data->oldHold = 0;
 }
 
 static void fileBrowserDraw(Screen *self)
@@ -317,8 +359,10 @@ static void fileBrowserExit(Screen *self)
     FileBrowserData *data = (FileBrowserData *)self->data;
     if(data)
     {
-        if(data->folders) destroyList(data->folders, true);
-        if(data->path) MEMFreeToDefaultHeap(data->path);
+        if(data->folders)
+            destroyList(data->folders, true);
+        if(data->path)
+            MEMFreeToDefaultHeap(data->path);
         MEMFreeToDefaultHeap(data);
     }
     MEMFreeToDefaultHeap(self);
@@ -327,9 +371,14 @@ static void fileBrowserExit(Screen *self)
 Screen *fileBrowserScreenGet(bool installMenu, bool allowNoIntro, FileBrowserCallback callback, void *userdata)
 {
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
-    if(self == NULL) return NULL;
+    if(self == NULL)
+        return NULL;
     FileBrowserData *data = MEMAllocFromDefaultHeap(sizeof(FileBrowserData));
-    if(data == NULL) { MEMFreeToDefaultHeap(self); return NULL; }
+    if(data == NULL)
+    {
+        MEMFreeToDefaultHeap(self);
+        return NULL;
+    }
     OSBlockSet(data, 0, sizeof(FileBrowserData));
     data->path = MEMAllocFromDefaultHeap(FS_MAX_PATH);
     data->folders = createList();
@@ -338,7 +387,8 @@ Screen *fileBrowserScreenGet(bool installMenu, bool allowNoIntro, FileBrowserCal
     data->callback = callback;
     data->userdata = userdata;
     data->usbMounted = getUSB();
-    if(activeDevice == NUSDEV_NONE) activeDevice = data->usbMounted ? NUSDEV_USB : NUSDEV_SD;
+    if(activeDevice == NUSDEV_NONE)
+        activeDevice = data->usbMounted ? NUSDEV_USB : NUSDEV_SD;
     strcpy(data->path, (activeDevice & NUSDEV_USB) ? (data->usbMounted == NUSDEV_USB01 ? INSTALL_DIR_USB1 : INSTALL_DIR_USB2) : (activeDevice == NUSDEV_SD ? INSTALL_DIR_SD : INSTALL_DIR_MLC));
     refreshDirList(data);
     self->onUpdate = fileBrowserUpdate;
@@ -352,5 +402,6 @@ Screen *fileBrowserScreenGet(bool installMenu, bool allowNoIntro, FileBrowserCal
 void fileBrowserMenu(bool installMenu, bool allowNoIntro, FileBrowserCallback callback, void *userdata)
 {
     Screen *s = fileBrowserScreenGet(installMenu, allowNoIntro, callback, userdata);
-    if(s) screenPush(s);
+    if(s)
+        screenPush(s);
 }

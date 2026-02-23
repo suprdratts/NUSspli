@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2023 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -22,7 +22,6 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
 
 #include <ticket.h>
 
@@ -116,6 +115,7 @@ bool generateTik(const char *path, const TMD *tmd)
     ticket.property_mask = 0xFFFF;
 
     ticket.header_version = 0x0001;
+    // Normal tickets don't need header sections but DLC needs one
     if(!isDLC(tmd->tid))
         ticket.total_hdr_size = 0x00000014;
     else
@@ -176,41 +176,42 @@ typedef struct
     void *userdata;
 } CertData;
 
-static void downloadCertDone(bool result, void *userdata)
-{
-    CertData *data = (CertData *)userdata;
-    if(result)
-    {
-        // Re-call generateCert, it should now have default_cert[0] != 0xff
-        generateCert(data->tmd, data->ticket, data->ticketSize, data->path, data->callback, data->userdata);
-    }
-    else
-    {
-        if(data->callback) data->callback(false, data->userdata);
-    }
-    MEMFreeToDefaultHeap(data);
-}
-
 static void downloadCertDoneRAM(bool result, void *userdata)
 {
     Screen *self = (Screen *)userdata;
     CertData *data = (CertData *)self->data;
-    RAMBUF *rambuf = (RAMBUF *)data->userdata; // Hacky reuse
+    RAMBUF *rambuf = (RAMBUF *)data->userdata;
 
     if(result)
     {
         if(rambuf->size >= 0x350 + sizeof(OTHER_PPKI_CERT))
         {
             OSBlockMove(default_cert, rambuf->buf + 0x350, sizeof(OTHER_PPKI_CERT), false);
-            generateCert(data->tmd, data->ticket, data->ticketSize, data->path, data->callback, data->userdata);
+            const TMD *tmd = data->tmd;
+            const TICKET *ticket = data->ticket;
+            size_t ticketSize = data->ticketSize;
+            char path[FS_MAX_PATH];
+            strcpy(path, data->path);
+            ResultCallback cb = data->callback;
+            void *ud = data->userdata;
+
+            screenPop();
+            generateCert(tmd, ticket, ticketSize, path, cb, ud);
         }
-        else result = false;
+        else
+            result = false;
     }
 
-    if(!result) { if(data->callback) data->callback(false, data->userdata); }
+    if(!result)
+    {
+        ResultCallback cb = data->callback;
+        void *ud = data->userdata;
+        screenPop();
+        if(cb)
+            cb(false, ud);
+    }
     freeRamBuf(rambuf);
     MEMFreeToDefaultHeap(data);
-    screenPop();
 }
 
 void generateCert(const TMD *tmd, const TICKET *ticket, size_t ticketSize, const char *path, ResultCallback callback, void *userdata)
@@ -255,11 +256,27 @@ void generateCert(const TMD *tmd, const TICKET *ticket, size_t ticketSize, const
             if(default_cert[0] == 0xff)
             {
                 CertData *data = MEMAllocFromDefaultHeap(sizeof(CertData));
-                if(data == NULL) { if(callback) callback(false, userdata); return; }
-                data->tmd = tmd; data->ticket = ticket; data->ticketSize = ticketSize; strcpy(data->path, path); data->callback = callback; data->userdata = userdata;
+                if(data == NULL)
+                {
+                    if(callback)
+                        callback(false, userdata);
+                    return;
+                }
+                data->tmd = tmd;
+                data->ticket = ticket;
+                data->ticketSize = ticketSize;
+                strcpy(data->path, path);
+                data->callback = callback;
+                data->userdata = userdata;
                 RAMBUF *rambuf = allocRamBuf();
-                if(rambuf == NULL) { MEMFreeToDefaultHeap(data); if(callback) callback(false, userdata); return; }
-                data->userdata = rambuf; // Abuse userdata to store rambuf
+                if(rambuf == NULL)
+                {
+                    MEMFreeToDefaultHeap(data);
+                    if(callback)
+                        callback(false, userdata);
+                    return;
+                }
+                data->userdata = rambuf;
                 downloadFile(DOWNLOAD_URL "000500101000400a/cetk", "OSv10 title.tik", NULL, FILE_TYPE_TIK | FILE_TYPE_TORAM, false, NULL, rambuf, downloadCertDoneRAM, data);
                 return;
             }
@@ -275,21 +292,25 @@ void generateCert(const TMD *tmd, const TICKET *ticket, size_t ticketSize, const
         char *err = getStaticScreenBuffer();
         sprintf(err, "%s\n%s", localise("Could not open path"), prettyDir(path));
         showErrorFrame(err);
-        if(callback) callback(false, userdata);
+        if(callback)
+            callback(false, userdata);
         return;
     }
     addToIOQueue(&cetk, 1, sizeof(CETK), cert);
     addToIOQueue(NULL, 0, 0, cert);
-    if(callback) callback(true, userdata);
+    if(callback)
+        callback(true, userdata);
 }
 
 static void drawTicketFrame(uint64_t titleID)
 {
     char tid[17];
     hex(titleID, 16, tid);
+
     startNewFrame();
     textToFrame(0, 0, localise("Title ID:"));
     textToFrame(1, 3, tid);
+
     int line = MAX_LINES - 1;
     textToFrame(line--, 0, localise("Press " BUTTON_B " to return"));
     textToFrame(line--, 0, localise("Press " BUTTON_A " to continue"));
@@ -302,6 +323,7 @@ static void drawTicketGenFrame(const char *dir)
     colorStartNewFrame(SCREEN_COLOR_D_GREEN);
     textToFrame(0, 0, localise("Fake ticket generated on:"));
     textToFrame(1, 0, prettyDir(dir));
+
     textToFrame(3, 0, localise("Press any key to return"));
     drawFrame();
 }
@@ -321,7 +343,8 @@ static void fakeCertDone(bool result, void *userdata)
         char tikPath[FS_MAX_PATH];
         strcpy(tikPath, data->dir);
         char *ptr = strrchr(tikPath, '.');
-        if(ptr) strcpy(ptr + 1, "tik");
+        if(ptr)
+            strcpy(ptr + 1, "tik");
         if(generateTik(tikPath, data->tmd))
         {
             drawTicketGenFrame(tikPath);
@@ -362,7 +385,8 @@ static void fakeTicketExit(Screen *self)
     FakeTicketData *data = (FakeTicketData *)self->data;
     if(data)
     {
-        if(data->tmd) MEMFreeToDefaultHeap(data->tmd);
+        if(data->tmd)
+            MEMFreeToDefaultHeap(data->tmd);
         MEMFreeToDefaultHeap(data);
     }
     MEMFreeToDefaultHeap(self);
@@ -371,9 +395,15 @@ static void fakeTicketExit(Screen *self)
 static void ticketFileBrowserCallback(const char *path, void *userdata)
 {
     (void)userdata;
-    if(path == NULL) return;
+    if(path == NULL)
+        return;
     TMD *tmd = getTmd(path, false);
-    if(tmd == NULL) { showErrorFrame(localise("Invalid title.tmd file!")); generateFakeTicket(); return; }
+    if(tmd == NULL)
+    {
+        showErrorFrame(localise("Invalid title.tmd file!"));
+        generateFakeTicket();
+        return;
+    }
     Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
     FakeTicketData *data = MEMAllocFromDefaultHeap(sizeof(FakeTicketData));
     OSBlockSet(data, 0, sizeof(FakeTicketData));
@@ -395,13 +425,22 @@ void generateFakeTicket()
 void deleteTicket(uint64_t tid)
 {
     LIST *ticketList = createList();
-    if(ticketList == NULL) return;
+    if(ticketList == NULL)
+        return;
+
     char *path = getStaticPathBuffer(0);
     OSBlockMove(path, TICKET_BUCKET, sizeof(TICKET_BUCKET), false);
+
     char *inSentence = path + (sizeof(TICKET_BUCKET) - 1);
     FSADirectoryHandle dir;
+    OSTime t = OSGetTime();
     FSError ret = FSAOpenDir(getFSAClient(), path, &dir);
-    if(ret != FS_ERROR_OK) { destroyList(ticketList, true); return; }
+    if(ret != FS_ERROR_OK)
+    {
+        debugPrintf("Error opening %s: %s", path, translateFSErr(ret));
+        return;
+    }
+
     FSADirectoryEntry entry;
     FSADirectoryHandle dir2;
     char *fileName;
@@ -412,18 +451,30 @@ void deleteTicket(uint64_t tid)
     bool found;
     uint8_t *fileEnd;
     uint8_t *ptr;
+    // Loop through all the folder inside of the ticket bucket
     while(FSAReadDir(getFSAClient(), dir, &entry) == FS_ERROR_OK)
     {
-        if(!(entry.info.flags & FS_STAT_DIRECTORY) || strlen(entry.name) != 4) continue;
+        if(!(entry.info.flags & FS_STAT_DIRECTORY) || strlen(entry.name) != 4)
+        {
+            debugPrintf("Sanity check failed on %s", entry.name);
+            continue;
+        }
+
         strcpy(inSentence, entry.name);
         ret = FSAOpenDir(getFSAClient(), path, &dir2);
         if(ret == FS_ERROR_OK)
         {
             strcat(inSentence, "/");
             fileName = inSentence + strlen(inSentence);
+            // Loop through all the subfolders
             while(FSAReadDir(getFSAClient(), dir2, &entry) == FS_ERROR_OK)
             {
-                if((entry.info.flags & FS_STAT_DIRECTORY) || strlen(entry.name) != 12) continue;
+                if((entry.info.flags & FS_STAT_DIRECTORY) || strlen(entry.name) != 12) // TODO: entry.info.flags & FS_STAT_FILE is false for some reason
+                {
+                    debugPrintf("Sanity check failed on %s", entry.name);
+                    continue;
+                }
+
                 strcpy(fileName, entry.name);
                 fileSize = readFile(path, &file);
                 if(file != NULL)
@@ -431,37 +482,90 @@ void deleteTicket(uint64_t tid)
                     ticket = (TICKET *)file;
                     fileEnd = ((uint8_t *)file) + fileSize;
                     found = false;
+                    // Loop through all the tickets inside of a file
                     while(true)
                     {
                         ptr = ((uint8_t *)ticket) + sizeof(TICKET);
-                        if(ticket->total_hdr_size > 0x14) ptr += ticket->total_hdr_size - 0x14;
-                        if(ticket->tid == tid) found = true;
+                        if(ticket->total_hdr_size > 0x14)
+                            ptr += ticket->total_hdr_size - 0x14;
+
+                        // Ignore the ticket in case the title ID matches
+                        if(ticket->tid == tid)
+                        {
+                            found = true;
+                            debugPrintf("Ticket found at %s+0x%X", path, ((uint8_t *)ticket) - ((uint8_t *)file));
+                        }
+                        // Else remeber its offset and size
                         else
                         {
                             sec = MEMAllocFromDefaultHeap(sizeof(TICKET_SECTION));
-                            if(sec) { sec->start = (uint8_t *)ticket; sec->size = ptr - sec->start; addToListEnd(ticketList, sec); }
+                            if(sec)
+                            {
+                                sec->start = (uint8_t *)ticket;
+                                sec->size = ptr - sec->start;
+
+                                if(!addToListEnd(ticketList, sec))
+                                {
+                                    MEMFreeToDefaultHeap(sec);
+                                    debugPrintf("Error allocating memory!");
+                                    found = false;
+                                    break;
+                                }
+                            }
+                            else
+                            {
+                                debugPrintf("Error allocating memory!");
+                                found = false;
+                                break;
+                            }
                         }
-                        if(ptr >= fileEnd) break;
+
+                        if(ptr == fileEnd)
+                            break;
+                        if(ptr > fileEnd)
+                        {
+                            debugPrintf("Filesize missmatch!");
+                            found = false;
+                            break;
+                        }
+
                         ticket = (TICKET *)ptr;
                     }
+
+                    // In case there was a matching ticket inside of the file either delete or recreate it with the remembered tickets only
                     if(found)
                     {
-                        if(getListSize(ticketList) == 0) FSARemove(getFSAClient(), path);
+                        if(getListSize(ticketList) == 0)
+                            FSARemove(getFSAClient(), path);
                         else
                         {
                             FSAFileHandle fh = openFile(path, "w", 0);
-                            forEachListEntry(ticketList, sec) addToIOQueue(sec->start, 1, sec->size, fh);
+                            forEachListEntry(ticketList, sec)
+                                addToIOQueue(sec->start, 1, sec->size, fh);
+
                             addToIOQueue(NULL, 0, 0, fh);
                         }
                     }
+
                     clearList(ticketList, true);
                     MEMFreeToDefaultHeap(file);
                 }
+                else if(fileSize == 0)
+                {
+                    debugPrintf("Removing %s", path);
+                    FSARemove(getFSAClient(), path);
+                }
             }
+
             FSACloseDir(getFSAClient(), dir2);
         }
+        else
+            debugPrintf("Error opening %s: %s", path, translateFSErr(ret));
     }
+
     FSACloseDir(getFSAClient(), dir);
+    t = OSGetTime() - t;
+    addEntropy(&t, sizeof(OSTime));
     destroyList(ticketList, true);
 }
 
@@ -470,5 +574,6 @@ bool hasMagicHeader(const TICKET *ticket)
     for(size_t i = 0; i < sizeof(magic_header); ++i)
         if(ticket->header.magic_header[i] != magic_header[i])
             return false;
+
     return ticket->header.meta_version == 0x01;
 }

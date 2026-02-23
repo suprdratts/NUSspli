@@ -19,8 +19,6 @@
 #include <wut-fixups.h>
 
 #include <stdbool.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include <crypto.h>
 #include <deinstaller.h>
@@ -36,139 +34,99 @@
 
 #pragma GCC diagnostic ignored "-Wundef"
 #include <coreinit/mcp.h>
-#include <coreinit/thread.h>
 #include <coreinit/memdefaultheap.h>
+#include <coreinit/thread.h>
 #pragma GCC diagnostic pop
 
 typedef struct
 {
-    MCPTitleListType title;
-    char *name;
+    char name[256];
     bool channelHaxx;
     bool skipEnd;
+    uint64_t tid;
+    char path[FS_MAX_PATH];
+    size_t titleSize;
+    McpData mcp_data;
     ResultCallback callback;
     void *userdata;
-    int state;
-    McpData mcp_data;
-    size_t titleSize;
-    int timer;
 } DeinstallData;
 
-static void deinstallDoneCallback(bool result, void *userdata)
+static void deinstallProgressCallback(bool result, void *userdata)
 {
     DeinstallData *data = (DeinstallData *)userdata;
-    ResultCallback cb = data->callback;
-    void *ud = data->userdata;
-    MCPTitleListType title = data->title;
-    char *name = data->name;
-    bool channelHaxx = data->channelHaxx;
-    bool skipEnd = data->skipEnd;
-    size_t titleSize = data->titleSize;
 
-    data->name = NULL; // Hand over ownership
-    screenPop(); // Pop deinstall screen
-
-    if(result)
+    if(!data->channelHaxx)
     {
-        deleteTicket(title.titleId);
-        if(!channelHaxx) enableShutdown();
-        freeSpace(getDevFromPath(title.path), titleSize);
-        addToScreenLog("Deinstallation finished!");
-        if(!skipEnd) showFinishedScreen(name, FINISHING_OPERATION_DEINSTALL);
+        deleteTicket(data->tid);
+        enableShutdown();
     }
-    else
-    {
-        if(!channelHaxx) enableShutdown();
-    }
-    if(cb) cb(result, ud);
-    if(name) MEMFreeToDefaultHeap(name);
-}
 
-static void deinstallUpdate(Screen *self)
-{
-    DeinstallData *data = (DeinstallData *)self->data;
+    freeSpace(getDevFromPath(data->path), data->titleSize);
+    addToScreenLog("Deinstallation finished!");
 
-    switch(data->state)
-    {
-        case 0:
-        {
-            data->titleSize = getDirsize(data->title.path);
-            MCPInstallTitleInfo info __attribute__((__aligned__(0x40)));
-            glueMcpData(&info, &data->mcp_data);
+    if(!data->skipEnd)
+        showFinishedScreen(data->name, FINISHING_OPERATION_DEINSTALL);
 
-            debugPrintf("Deleting %s", data->title.path);
-            if(!data->channelHaxx) disableShutdown();
-
-            MCPError err = MCP_DeleteTitleAsync(mcpHandle, data->title.path, &info);
-            if(err != 0)
-            {
-                debugPrintf("Err1: %#010x (%d)", err, err);
-                if(!data->channelHaxx) enableShutdown();
-                screenPop();
-                if(data->callback) data->callback(false, data->userdata);
-                return;
-            }
-
-            if(data->channelHaxx)
-            {
-                data->state = 3;
-                data->timer = 60 * 10;
-                break;
-            }
-
-            data->state = 1;
-            showMcpProgress(&data->mcp_data, data->name, false, deinstallDoneCallback, data);
-            break;
-        }
-        case 3:
-        {
-            if(--data->timer == 0)
-            {
-                ResultCallback cb = data->callback;
-                void *ud = data->userdata;
-                screenPop();
-                if(cb) cb(true, ud);
-            }
-            break;
-        }
-        default: break;
-    }
-}
-
-static void deinstallDraw(Screen *self)
-{
-    DeinstallData *data = (DeinstallData *)self->data;
-    startNewFrame();
-    char *toFrame = getToFrameBuffer();
-    strcpy(toFrame, localise("Uninstalling"));
-    strcat(toFrame, " ");
-    strcat(toFrame, data->name);
-    textToFrame(0, 0, toFrame);
-    textToFrame(1, 0, localise("Preparing..."));
-    drawFrame();
-}
-
-static void deinstallExit(Screen *self)
-{
-    DeinstallData *data = (DeinstallData *)self->data;
-    if(data)
-    {
-        if(data->name) MEMFreeToDefaultHeap(data->name);
-        MEMFreeToDefaultHeap(data);
-    }
-    MEMFreeToDefaultHeap(self);
+    if(data->callback)
+        data->callback(result, data->userdata);
+    MEMFreeToDefaultHeap(data);
 }
 
 void deinstall(MCPTitleListType *title, const char *name, bool channelHaxx, bool skipEnd, ResultCallback callback, void *userdata)
 {
-    Screen *self = MEMAllocFromDefaultHeap(sizeof(Screen));
-    if(self == NULL) return;
     DeinstallData *data = MEMAllocFromDefaultHeap(sizeof(DeinstallData));
-    if(data == NULL) { MEMFreeToDefaultHeap(self); return; }
+    if(data == NULL)
+    {
+        if(callback)
+            callback(false, userdata);
+        return;
+    }
+
     OSBlockSet(data, 0, sizeof(DeinstallData));
-    data->title = *title;
-    data->name = MEMAllocFromDefaultHeap(strlen(name) + 1); if(data->name) strcpy(data->name, name);
-    data->channelHaxx = channelHaxx; data->skipEnd = skipEnd; data->callback = callback; data->userdata = userdata; data->state = 0;
-    self->onUpdate = deinstallUpdate; self->onDraw = deinstallDraw; self->onExit = deinstallExit; self->data = data; self->dirty = true;
-    screenPush(self);
+    strncpy(data->name, name, 255);
+    data->channelHaxx = channelHaxx;
+    data->skipEnd = skipEnd;
+    data->tid = title->titleId;
+    strncpy(data->path, title->path, FS_MAX_PATH - 1);
+    data->titleSize = getDirsize(title->path);
+    data->callback = callback;
+    data->userdata = userdata;
+
+    startNewFrame();
+    char *toFrame = getToFrameBuffer();
+    strcpy(toFrame, localise("Uninstalling"));
+    strcat(toFrame, " ");
+    strcat(toFrame, name);
+    textToFrame(0, 0, toFrame);
+    textToFrame(1, 0, localise("Preparing..."));
+    writeScreenLog(2);
+    drawFrame();
+    showFrame();
+
+    MCPInstallTitleInfo info __attribute__((__aligned__(0x40)));
+    glueMcpData(&info, &data->mcp_data);
+
+    if(!channelHaxx)
+        disableShutdown();
+
+    MCPError err = MCP_DeleteTitleAsync(mcpHandle, title->path, &info);
+    if(err != 0)
+    {
+        if(!channelHaxx)
+            enableShutdown();
+        if(callback)
+            callback(false, userdata);
+        MEMFreeToDefaultHeap(data);
+        return;
+    }
+
+    if(channelHaxx)
+    {
+        if(callback)
+            callback(true, userdata);
+        MEMFreeToDefaultHeap(data);
+        return;
+    }
+
+    showMcpProgress(&data->mcp_data, name, false, deinstallProgressCallback, data);
 }

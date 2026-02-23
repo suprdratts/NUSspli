@@ -21,10 +21,10 @@
 
 #include <wut-fixups.h>
 
+#include <menu/utils.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
-#include <menu/utils.h>
 
 #pragma GCC diagnostic ignored "-Wundef"
 #include <coreinit/mcp.h>

@@ -1,6 +1,6 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
- * Copyright (c) 2023-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2023 V10lator <v10lator@myway.de>                         *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -221,6 +221,7 @@ NO_INTRO_DATA *transformNoIntro(const char *path)
         return NULL;
     }
 
+#ifndef NUSSPLI_LITE
     TMD *tmd = getTmd(data->path, false);
     if(tmd == NULL)
         goto transformError2;
@@ -243,6 +244,7 @@ NO_INTRO_DATA *transformNoIntro(const char *path)
         debugPrintf("Error creating cert at %s", data->path);
         goto transformError2;
     }
+#endif
 
     *fromP = '\0';
     return data;

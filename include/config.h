@@ -1,6 +1,6 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
- * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2022 V10lator <v10lator@myway.de>                    *
  * Copyright (c) 2022 Xpl0itU <DaThinkingChair@protonmail.com>             *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
@@ -31,7 +31,12 @@
 #include <coreinit/mcp.h>
 #pragma GCC diagnostic pop
 
-#define CONFIG_PATH            NUSDIR_SD "NUSspli.txt"
+#ifndef NUSSPLI_LITE
+#define CONFIG_PATH NUSDIR_SD "NUSspli.txt"
+#else
+#define CONFIG_PATH NUSDIR_SD "NUSspli-Lite.txt"
+#endif
+
 #define TITLE_KEY_URL_MAX_SIZE 1024
 
 #ifdef __cplusplus

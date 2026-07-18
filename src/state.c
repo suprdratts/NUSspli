@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2022 V10lator <v10lator@myway.de>                    *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
  * it under the terms of the GNU General Public License as published by    *
@@ -43,7 +43,9 @@
 
 volatile APP_STATE app;
 static bool shutdownEnabled = true;
+#ifndef NUSSPLI_LITE
 static bool channel;
+#endif
 static bool aroma;
 static bool apdEnabled;
 static uint32_t apdDisabledCount = 0;
@@ -106,10 +108,12 @@ void disableShutdown()
     debugPrintf("Home key disabled!");
 }
 
+#ifndef NUSSPLI_LITE
 bool isChannel()
 {
     return channel;
 }
+#endif
 
 uint32_t homeButtonCallback(void *dummy)
 {
@@ -137,7 +141,9 @@ void initState()
     ACPInitialize();
 
     aroma = RPXLoader_InitLibrary() == RPX_LOADER_RESULT_SUCCESS;
+#ifndef NUSSPLI_LITE
     channel = OSGetTitleID() == 0x0005000010155373;
+#endif
 
     uint32_t ime;
     if(IMIsAPDEnabledBySysSettings(&ime) == 0)

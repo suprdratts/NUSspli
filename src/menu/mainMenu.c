@@ -1,7 +1,7 @@
 /***************************************************************************
  * This file is part of NUSspli.                                           *
  * Copyright (c) 2019-2020 Pokes303                                        *
- * Copyright (c) 2020-2024 V10lator <v10lator@myway.de>                    *
+ * Copyright (c) 2020-2022 V10lator <v10lator@myway.de>                    *
  * Copyright (c) 2022 Xpl0itU <DaThinkingChair@protonmail.com>             *
  *                                                                         *
  * This program is free software; you can redistribute it and/or modify    *
@@ -50,7 +50,11 @@ static void drawMainMenuFrame()
     boxToFrame(0, 5);
     textToFrame(1, ALIGNED_CENTER, "NUSspli");
     textToFrame(3, ALIGNED_CENTER,
+#ifndef NUSSPLI_LITE
         "NUS simple packet loader/installer"
+#else
+        "Lite"
+#endif
         " [" NUSSPLI_VERSION "]");
 
     textToFrame(4, ALIGNED_CENTER, NUSSPLI_COPYRIGHT);
@@ -58,9 +62,13 @@ static void drawMainMenuFrame()
     arrowToFrame(cursorPos, 0);
 
     int line = 11;
+#ifndef NUSSPLI_LITE
     textToFrame(line++, 4, localise("Download content"));
+#endif
     textToFrame(line++, 4, localise("Install content"));
+#ifndef NUSSPLI_LITE
     textToFrame(line++, 4, localise("Generate a fake <title.tik> file"));
+#endif
     textToFrame(line++, 4, localise("Browse installed titles"));
     textToFrame(line++, 4, localise("Options"));
     textToFrame(line++, 4, localise("Logs"));
@@ -116,21 +124,35 @@ void mainMenu()
             switch(cursorPos)
             {
                 case 11:
+#ifndef NUSSPLI_LITE
                     titleBrowserMenu();
                     break;
                 case 12:
+#endif
                     installerMenu();
                     break;
+#ifndef NUSSPLI_LITE
                 case 13:
                     generateFakeTicket();
                     break;
                 case 14:
+#else
+                case 12:
+#endif
                     ititleBrowserMenu();
                     break;
+#ifndef NUSSPLI_LITE
                 case 15:
+#else
+                case 13:
+#endif
                     configMenu();
                     break;
+#ifndef NUSSPLI_LITE
                 case 16:
+#else
+                case 14:
+#endif
                     logsMenu();
                     break;
             }
@@ -139,7 +161,11 @@ void mainMenu()
         }
         else if(vpad.trigger & VPAD_BUTTON_DOWN)
         {
+#ifndef NUSSPLI_LITE
             if(++cursorPos == 17)
+#else
+            if(++cursorPos == 15)
+#endif
                 cursorPos = 11;
 
             redraw = true;
@@ -147,7 +173,11 @@ void mainMenu()
         else if(vpad.trigger & VPAD_BUTTON_UP)
         {
             if(--cursorPos == 10)
+#ifndef NUSSPLI_LITE
                 cursorPos = 16;
+#else
+                cursorPos = 14;
+#endif
 
             redraw = true;
         }
